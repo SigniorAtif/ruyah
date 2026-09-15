@@ -147,6 +147,8 @@ interface RuyaState {
   setFile(file: File): Promise<void>;
   setReady(ready: boolean): void;
   ensureEngine(): PlayerEngine | null;
+  /** §8 — re-open a transport that has given up. See the action for why. */
+  reconnect(): Promise<void>;
   showToast(text: string): void;
   setNetwork(patch: Partial<NetworkConditions>): void;
   leave(): void;
@@ -155,7 +157,7 @@ interface RuyaState {
 /** Everything in the store that is session state rather than an action. */
 type SessionData = Omit<
   RuyaState,
-  'startSession' | 'setFile' | 'setReady' | 'ensureEngine' | 'showToast' | 'setNetwork' | 'leave'
+  'startSession' | 'setFile' | 'setReady' | 'ensureEngine' | 'showToast' | 'setNetwork' | 'reconnect' | 'leave'
 >;
 
 /**
@@ -392,6 +394,23 @@ export const useRuya = create<RuyaState>((set, get) => ({
       toastTimer = null;
       set({ toast: null });
     }, TOAST_MS);
+  },
+
+  /**
+   * Ask the transport to connect again after it has stopped trying.
+   *
+   * `reconnecting` retries on its own, but `disconnected` is terminal: a fatal
+   * close (room full, rate limited, replaced) or a pulled cable leaves the
+   * socket shut with no backoff running, and nothing in the UI could reopen it.
+   * The only way out was a reload, which throws away the loaded File — the one
+   * thing §8 promises to keep. `connect()` clears the fatal and closed flags,
+   * so this is all it takes.
+   */
+  async reconnect() {
+    const { roomCode, userId } = get();
+    if (!transport || !roomCode || !userId) return;
+    set({ sessionError: null });
+    await transport.connect(roomCode, userId);
   },
 
   setNetwork(patch) {

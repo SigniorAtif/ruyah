@@ -4,6 +4,13 @@ import { useState } from 'react';
 import { getEngine, useRuya } from '@/lib/store';
 
 /**
+ * Sits at z-50, above every overlay including §8's.
+ *
+ * It has to. The cable toggle can put the transport into `disconnected`, which
+ * raises the full-screen overlay, and the only control that brings it back is
+ * this panel — at a lower z-index that was a one-way door: drop the connection
+ * and the button to restore it was buried under the overlay it had just raised.
+ *
  * §10 — a zero-latency mock hides every bug this design exists to prevent, so
  * the bad network is a first-class control here: latency, jitter, loss, and a
  * cable to pull. The drift injectors drive acceptance items 4 and 5; they move
@@ -25,7 +32,7 @@ export function DevPanel() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="pointer-events-auto absolute bottom-24 left-4 z-20 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-muted backdrop-blur hover:text-foreground"
+        className="pointer-events-auto absolute bottom-24 left-4 z-50 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-muted backdrop-blur hover:text-foreground"
       >
         dev
       </button>
@@ -33,7 +40,7 @@ export function DevPanel() {
   }
 
   return (
-    <div className="pointer-events-auto absolute bottom-24 left-4 z-30 w-72 rounded border border-line bg-panel/95 p-3 font-mono text-[11px] backdrop-blur">
+    <div className="pointer-events-auto absolute bottom-24 left-4 z-50 w-72 rounded border border-line bg-panel/95 p-3 font-mono text-[11px] backdrop-blur">
       <div className="flex items-center justify-between">
         <span className="text-muted">network simulation</span>
         <button type="button" onClick={() => setOpen(false)} className="text-muted hover:text-foreground">
