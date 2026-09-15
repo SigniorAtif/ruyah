@@ -186,14 +186,6 @@ export class PlayerEngine {
   private lastWatchTickAt = 0;
   private lastProbeAt = 0;
 
-  // ---- §8 diagnostics. Cheap counters plus a ring buffer, so the state that
-  // led to a peer-lost is still there to read after it has latched.
-  private heartbeatsSent = 0;
-  private messagesReceived = 0;
-  private lastInboundAt = 0;
-  private lastInboundType = 'none';
-  private probesSinceLost = 0;
-  private readonly dropoutLog: string[] = [];
   private driftMs: number | null = null;
   private deadbandS = MIN_DEADBAND_S;
   private consecutiveHighDrift = 0;
@@ -234,14 +226,6 @@ export class PlayerEngine {
     this.manualOffsetSec = opts.manualOffsetSec ?? 0;
     this.transportState = opts.transport.state;
 
-    // Dev-only console handle, so a peer-lost that has already latched can be
-    // read out after the fact instead of needing to be caught live.
-    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
-      (window as unknown as { __ruyah?: unknown }).__ruyah = {
-        dropoutReport: () => this.dropoutReport(),
-        engine: this,
-      };
-    }
 
     this.unsubscribers.push(this.transport.on((msg) => this.onMessage(msg)));
     this.unsubscribers.push(
@@ -553,18 +537,6 @@ export class PlayerEngine {
     this.notify();
   }
 
-  /** Dev-panel affordance for acceptance tests 4 and 5: fake decoder drift. */
-  debugInjectDrift(seconds: number): void {
-    const v = this.video;
-    if (!v) return;
-    // Deliberately local and unbroadcast — this simulates the decoders
-    // separating, not a user seek. No cooldown either, so the very next
-    // heartbeat sees it.
-    this.suppress();
-    v.currentTime = Math.max(0, v.currentTime + seconds);
-    this.notify();
-  }
-
   /** Explicit resync after a dropout (§8). Authority only. */
   private sendResyncSeek(): void {
     const v = this.video;
@@ -584,9 +556,6 @@ export class PlayerEngine {
     // Any traffic at all proves she is there (§8 liveness is separate from
     // §7.3's stale-heartbeat rejection, which is about drift maths only).
     this.lastPeerContactAt = this.now();
-    this.messagesReceived++;
-    this.lastInboundAt = this.lastPeerContactAt;
-    this.lastInboundType = msg.type;
     if (this.peerLost) this.onPeerReturned();
 
     switch (msg.type) {
@@ -959,7 +928,6 @@ export class PlayerEngine {
   private sendHeartbeat(): void {
     const v = this.video;
     if (!v) return;
-    this.heartbeatsSent++;
     this.transport.send({
       type: 'heartbeat',
       position: v.currentTime,
@@ -1028,8 +996,6 @@ export class PlayerEngine {
     if (!hidden && this.now() - this.visibleSince < VISIBILITY_GRACE_MS) return;
 
     this.peerLost = true;
-    this.probesSinceLost = 0;
-    this.recordDropoutEvent('declared-lost', { slip, limit });
     this.resyncPending = true;
     this.cancelPending();
     this.waitingToResume = false;
@@ -1051,54 +1017,10 @@ export class PlayerEngine {
   private probeWhileLost(tickAt: number): void {
     if (tickAt - this.lastProbeAt < PROBE_INTERVAL_MS) return;
     this.lastProbeAt = tickAt;
-    this.probesSinceLost++;
     this.sendHeartbeat();
-    // Every tenth probe, not every one: enough to show whether the probes are
-    // going out and nothing is coming back, without flooding the log.
-    if (this.probesSinceLost % 10 === 0) {
-      this.recordDropoutEvent('still-lost', { probes: this.probesSinceLost });
-    }
-  }
-
-  /**
-   * One line of §8 forensics. The engine cannot see the socket or the send
-   * queue, so it asks the transport for whatever it is willing to say — via
-   * feature detection, so SyncTransport stays exactly as §10 defines it.
-   */
-  private recordDropoutEvent(event: string, extra: Record<string, unknown>): void {
-    const doc = typeof document !== 'undefined' ? document : null;
-    const transport = this.transport as { debugInfo?: () => Record<string, unknown> };
-    const fields: Record<string, unknown> = {
-      event,
-      ...extra,
-      sinceContactMs: this.lastPeerContactAt ? this.now() - this.lastPeerContactAt : null,
-      sinceInboundMs: this.lastInboundAt ? this.now() - this.lastInboundAt : null,
-      lastInbound: this.lastInboundType,
-      heartbeatsSent: this.heartbeatsSent,
-      messagesReceived: this.messagesReceived,
-      videoAttached: this.video !== null,
-      heartbeatTimer: this.heartbeatTimer !== null,
-      hidden: doc ? doc.hidden : null,
-      focused: doc && typeof doc.hasFocus === 'function' ? doc.hasFocus() : null,
-      ...(transport.debugInfo ? transport.debugInfo() : {}),
-    };
-
-    const line = `[ruyah §8] ${new Date().toISOString()} ${JSON.stringify(fields)}`;
-    this.dropoutLog.push(line);
-    if (this.dropoutLog.length > 60) this.dropoutLog.shift();
-    if (process.env.NODE_ENV !== 'production') console.warn(line);
-  }
-
-  /**
-   * The §8 log, for pasting somewhere after the fact. Reachable from the
-   * console as `__ruyah.dropoutReport()` — see the constructor.
-   */
-  dropoutReport(): string {
-    return this.dropoutLog.join('\n');
   }
 
   private onPeerReturned(): void {
-    this.recordDropoutEvent('recovered', { via: this.lastInboundType });
     this.peerLost = false;
     // Fresh heartbeat right away so she can compute min(positions) too.
     this.sendHeartbeat();
