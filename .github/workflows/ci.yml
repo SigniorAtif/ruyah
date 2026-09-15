@@ -16,6 +16,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # Next generates the route/layout types (LayoutProps, PageProps, …) that
+      # the app's own signatures refer to. They do not exist in a fresh clone,
+      # so tsc has to come after this, not before it.
+      - run: npx next typegen
       - run: npx tsc --noEmit
       - run: npx eslint .
       - run: npm run build
