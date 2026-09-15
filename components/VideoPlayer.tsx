@@ -4,7 +4,6 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConnectionOverlay } from './ConnectionOverlay';
 import { ControlBar } from './ControlBar';
-import { DevPanel } from './DevPanel';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
@@ -89,7 +88,6 @@ export function VideoPlayer({ code }: { code: string }) {
       <Toast />
       <ControlBar visible={controlsVisible} containerRef={containerRef} />
       <ConnectionOverlay />
-      <DevPanel />
 
       {status?.mediaError && (
         <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/85 px-8 text-center">

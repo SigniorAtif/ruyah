@@ -56,8 +56,7 @@ export function Lobby() {
   }, []);
 
   const urlCheck = validateRelayUrl(relayUrl, devMode);
-  const usingMock = relayUrl.trim() === '' && devMode;
-  const canConnect = usingMock || urlCheck.ok;
+  const canConnect = urlCheck.ok;
 
   const begin = async (code: string, isAuthority: boolean) => {
     if (!name.trim() || !canConnect) return;
@@ -159,14 +158,8 @@ export function Lobby() {
               Both of you must use the same relay. It only ever sees timing
               messages — never the film.
             </p>
-            {!urlCheck.ok && !usingMock && (
+            {!urlCheck.ok && (
               <p className="mt-2 text-[11px] leading-relaxed text-bad">{urlCheck.message}</p>
-            )}
-            {usingMock && (
-              <p className="mt-2 text-[11px] leading-relaxed text-warn">
-                Dev mode: empty, so this tab talks to other tabs in this browser
-                over the mock transport. No relay is used.
-              </p>
             )}
             {relayUrl.trim() !== DEFAULT_RELAY_URL && (
               <button
