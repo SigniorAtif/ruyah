@@ -39,3 +39,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# relay deps (server/ is its own package, spec §4)
+/server/node_modules
+
+# Internal build specs — working documents, not part of the published project.
+/docs/
+
+# Local agent/tooling state
+/.claude/
+/.code-review-graph/
