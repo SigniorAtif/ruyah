@@ -125,6 +125,8 @@ export class WebSocketTransport implements SimulatedTransport {
 
   /** In-flight simulated sends, so a disconnect doesn't leak them. */
   private readonly pendingSends = new Set<ReturnType<typeof setTimeout>>();
+  /** Same, for the inbound half of the simulated delay. */
+  private readonly pendingReceives = new Set<ReturnType<typeof setTimeout>>();
 
   private readonly handlers = new Set<(msg: SyncMessage) => void>();
   private readonly stateHandlers = new Set<(state: TransportState) => void>();
@@ -253,7 +255,19 @@ export class WebSocketTransport implements SimulatedTransport {
 
     socket.onmessage = (ev: MessageEvent) => {
       if (this.socket !== socket) return;
-      this.receive(ev.data);
+      const delay = this.legDelayMs();
+      if (delay <= 0) {
+        this.receive(ev.data);
+        return;
+      }
+      // The inbound half of the simulated link. Drawn independently of the
+      // outbound draw, so packets still reorder.
+      const timer = setTimeout(() => {
+        this.pendingReceives.delete(timer);
+        if (this.socket !== socket || !this.net.connected) return;
+        this.receive(ev.data);
+      }, delay);
+      this.pendingReceives.add(timer);
     };
 
     socket.onerror = () => {
@@ -369,14 +383,12 @@ export class WebSocketTransport implements SimulatedTransport {
     if (!this.net.connected) return;
     if (this.net.dropRate > 0 && Math.random() < this.net.dropRate) return;
 
-    if (this.net.latencyMs <= 0 && this.net.jitterMs <= 0) {
+    const delay = this.legDelayMs();
+    if (delay <= 0) {
       this.writeNow(msg);
       return;
     }
 
-    const jitter =
-      this.net.jitterMs > 0 ? (Math.random() * 2 - 1) * this.net.jitterMs : 0;
-    const delay = Math.max(0, this.net.latencyMs + jitter);
     const timer = setTimeout(() => {
       this.pendingSends.delete(timer);
       // Re-check: the link may have gone while this was waiting, and a delayed
@@ -385,6 +397,25 @@ export class WebSocketTransport implements SimulatedTransport {
       this.writeNow(msg);
     }, delay);
     this.pendingSends.add(timer);
+  }
+
+  /**
+   * Delay for ONE traversal of the simulated link — half the configured
+   * latency, because the other half is charged on the opposite direction.
+   *
+   * The whole point is symmetry. Charging the full latency outbound and
+   * nothing inbound is a path where one leg is infinitely slower than the
+   * other, and ClockSync's halving cannot see that: this client's offset comes
+   * out wrong by half the injected latency, so every executeAt it writes fires
+   * that much early in real time while its drift readout stays at zero,
+   * because the same bias cancels out of the heartbeat projection. A link that
+   * adds the same delay each way costs the same round trip and leaves the
+   * estimate unbiased.
+   */
+  private legDelayMs(): number {
+    const jitter =
+      this.net.jitterMs > 0 ? (Math.random() * 2 - 1) * this.net.jitterMs : 0;
+    return Math.max(0, this.net.latencyMs / 2 + jitter / 2);
   }
 
   private writeNow(msg: SyncMessage): void {
@@ -396,6 +427,8 @@ export class WebSocketTransport implements SimulatedTransport {
   private clearPendingSends(): void {
     for (const t of this.pendingSends) clearTimeout(t);
     this.pendingSends.clear();
+    for (const t of this.pendingReceives) clearTimeout(t);
+    this.pendingReceives.clear();
   }
 
   // ---------------------------------------------------------------- receiving
@@ -572,6 +605,31 @@ export class WebSocketTransport implements SimulatedTransport {
 
   get peerId(): string | null {
     return this.peerIdValue;
+  }
+
+  /**
+   * Everything the §8 watchdog cannot see from inside the engine, for the
+   * moment it declares a peer lost. Not part of SyncTransport: the engine
+   * feature-detects it, so the production seam stays as §10 defines it.
+   */
+  debugInfo(): Record<string, unknown> {
+    const READY = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+    return {
+      socket: this.socket ? (READY[this.socket.readyState] ?? this.socket.readyState) : 'null',
+      transport: this.stateValue,
+      netConnected: this.net.connected,
+      latencyMs: this.net.latencyMs,
+      jitterMs: this.net.jitterMs,
+      dropRate: this.net.dropRate,
+      pendingSends: this.pendingSends.size,
+      pendingReceives: this.pendingReceives.size,
+      fatal: this.fatal,
+      everJoined: this.everJoined,
+      peerPresent: this.peerPresentValue,
+      reportedError: this.reportedError,
+      clockEstimate: this.clock.hasEstimate,
+      offsetMs: Math.round(this.clock.offsetMs),
+    };
   }
 
   get clockOffsetMs(): number {

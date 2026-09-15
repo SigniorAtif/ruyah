@@ -20,7 +20,16 @@ import type { SyncMessage, SyncTransport, TransportState } from '@/lib/sync/type
 export const SCHEDULE_LEAD_MS = 500;
 /** Bounds for the measured play lead. */
 const PLAY_LEAD_MIN_MS = 150;
-const PLAY_LEAD_MAX_MS = 600;
+/**
+ * The ceiling has to clear a whole relayed hop, not half of one. A play travels
+ * sender -> relay -> peer, and the lead is built from the SENDER's round trip to
+ * the relay, which says nothing about the peer's leg. Capping at the old 600ms
+ * meant any link slower than that delivered the command after its own executeAt
+ * had already passed: the peer then started late by the overshoot, with nothing
+ * to correct it until the next pause. A second and a bit is still well under the
+ * point where pressing play feels unresponsive.
+ */
+const PLAY_LEAD_MAX_MS = 1_500;
 /** Headroom over the measured link, for scheduling and decoder start-up. */
 const PLAY_LEAD_MARGIN_MS = 80;
 /** §7.1 */
@@ -35,12 +44,30 @@ const MAX_DIFFERENTIAL_WAIT_MS = 2_000;
 const PEER_FRESH_MS = 5_000;
 /** §8 */
 const DROPOUT_MS = 8_000;
+/** Cadence of the §8 watchdog, and the baseline its own lateness is judged against. */
+const DROPOUT_TICK_MS = 1_000;
+/**
+ * A watchdog tick this late means the browser stopped running our timers — the
+ * window lost focus, or got occluded — so the silence we are about to blame on
+ * her is our own. Small enough that ordinary scheduling noise never trips it.
+ */
+const TIMER_STARVED_MS = 1_500;
+/** While the peer is presumed lost, probe this often to re-establish contact. */
+const PROBE_INTERVAL_MS = 1_000;
 /** §12 — background tabs stutter; be tolerant rather than crying dropout. */
 const HIDDEN_DROPOUT_MS = 30_000;
 /** After returning to the foreground, let one heartbeat try to land first. */
 const VISIBILITY_GRACE_MS = 3_000;
 /** §7.3 guard 3 floor. */
 const MIN_DEADBAND_S = 0.15;
+/**
+ * §7.3 guard 3 ceiling. The deadband is scaled by measured jitter, and nothing
+ * bounded it: a link jittering by half a second bought itself a deadband wide
+ * enough to sit a real, visible desync inside and call it green forever. Past
+ * this the honest reading is not "within tolerance", it is "this link is too
+ * noisy to measure on", and the right response is still to correct.
+ */
+const MAX_DEADBAND_S = 0.4;
 /** §7.4 */
 const NUDGE_DELTA = 0.02;
 const NUDGE_CONVERGED_S = 0.05;
@@ -144,9 +171,29 @@ export class PlayerEngine {
 
   // ---- peer / drift state
   private peer: PeerHeartbeat | null = null;
+  /**
+   * Her measured round trip, from her heartbeats (§6). A command travels
+   * sender -> relay -> peer, so our own RTT covers only the first half of the
+   * path; sizing a lead without this leaves every command to a peer on a slower
+   * link arriving after its own executeAt, and a peer that starts late has
+   * nothing to correct it until the next pause.
+   */
+  private peerRttMs = 0;
   private lastProcessedAt = 0; // §7.3 guard 1
   private lastPeerContactAt = 0;
   private visibleSince = 0;
+  /** When the §8 watchdog last ran, so it can tell its own lateness from hers. */
+  private lastWatchTickAt = 0;
+  private lastProbeAt = 0;
+
+  // ---- §8 diagnostics. Cheap counters plus a ring buffer, so the state that
+  // led to a peer-lost is still there to read after it has latched.
+  private heartbeatsSent = 0;
+  private messagesReceived = 0;
+  private lastInboundAt = 0;
+  private lastInboundType = 'none';
+  private probesSinceLost = 0;
+  private readonly dropoutLog: string[] = [];
   private driftMs: number | null = null;
   private deadbandS = MIN_DEADBAND_S;
   private consecutiveHighDrift = 0;
@@ -186,6 +233,15 @@ export class PlayerEngine {
     this.transport = opts.transport;
     this.manualOffsetSec = opts.manualOffsetSec ?? 0;
     this.transportState = opts.transport.state;
+
+    // Dev-only console handle, so a peer-lost that has already latched can be
+    // read out after the fact instead of needing to be caught live.
+    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+      (window as unknown as { __ruyah?: unknown }).__ruyah = {
+        dropoutReport: () => this.dropoutReport(),
+        engine: this,
+      };
+    }
 
     this.unsubscribers.push(this.transport.on((msg) => this.onMessage(msg)));
     this.unsubscribers.push(
@@ -239,6 +295,13 @@ export class PlayerEngine {
       // genuinely dropped peer would then never be noticed at all.
       if (typeof document !== 'undefined' && !document.hidden) {
         this.visibleSince = this.now();
+        // Correction is gated off while hidden (§7.2), and a throttled tab
+        // sends its heartbeats minutes apart, so the pair comes back to the
+        // foreground with both pictures of each other stale. Speak immediately
+        // and drop the ordering guard, rather than waiting up to a full
+        // heartbeat interval before the ladder can even see the gap.
+        this.lastProcessedAt = 0;
+        this.sendHeartbeat();
       }
     };
     if (typeof document !== 'undefined') {
@@ -355,7 +418,7 @@ export class PlayerEngine {
     const executeAt = this.now() + this.playLeadMs();
 
     this.transport.send({ type: 'play', position, executeAt });
-    this.applyPlayCommand(position, executeAt);
+    this.applyPlayCommand(position, executeAt, false);
   }
 
   /**
@@ -387,8 +450,21 @@ export class PlayerEngine {
    * terrible one scheduling into next week.
    */
   private playLeadMs(): number {
-    const measured = this.transport.rttMs + 2 * this.transport.rttStdDevMs + PLAY_LEAD_MARGIN_MS;
+    // The slower of the two links, not ours: the command has to clear both legs
+    // of sender -> relay -> peer, and our own RTT only describes the first.
+    const link = Math.max(this.transport.rttMs, this.peerRttMs);
+    const measured = link + 2 * this.transport.rttStdDevMs + PLAY_LEAD_MARGIN_MS;
     return Math.min(PLAY_LEAD_MAX_MS, Math.max(PLAY_LEAD_MIN_MS, measured));
+  }
+
+  /**
+   * Lead for a scheduled SEEK. §6 fixes it at 500ms, which is the right floor
+   * and the wrong ceiling — on a link slower than that the seek lands after its
+   * own executeAt and fires late, exactly as an undersized play lead did. So:
+   * never shorter than the spec's figure, but allowed to grow with the link.
+   */
+  private seekLeadMs(): number {
+    return Math.max(SCHEDULE_LEAD_MS, this.playLeadMs());
   }
 
   togglePlay(): void {
@@ -403,9 +479,9 @@ export class PlayerEngine {
     if (!v) return;
     this.clearPendingSeek();
     const wasPlaying = playAfter ?? !v.paused;
-    const executeAt = this.now() + SCHEDULE_LEAD_MS;
+    const executeAt = this.now() + this.seekLeadMs();
     this.transport.send({ type: 'seek', position, executeAt, wasPlaying });
-    this.applySeekCommand(position, executeAt, wasPlaying);
+    this.applySeekCommand(position, executeAt, wasPlaying, false);
   }
 
   /**
@@ -495,11 +571,11 @@ export class PlayerEngine {
     if (!v || !this.transport.isAuthority) return;
     const peerPos = this.freshPeerPosition();
     const position = peerPos === null ? v.currentTime : Math.min(v.currentTime, peerPos);
-    const executeAt = this.now() + SCHEDULE_LEAD_MS;
+    const executeAt = this.now() + this.seekLeadMs();
     // wasPlaying:false — §8 leaves both sides paused, and the next play is a
     // normal §6.2 paused-to-playing transition driven by a real user gesture.
     this.transport.send({ type: 'seek', position, executeAt, wasPlaying: false });
-    this.applySeekCommand(position, executeAt, false);
+    this.applySeekCommand(position, executeAt, false, false);
   }
 
   // ========================================================= inbound messages
@@ -508,17 +584,20 @@ export class PlayerEngine {
     // Any traffic at all proves she is there (§8 liveness is separate from
     // §7.3's stale-heartbeat rejection, which is about drift maths only).
     this.lastPeerContactAt = this.now();
+    this.messagesReceived++;
+    this.lastInboundAt = this.lastPeerContactAt;
+    this.lastInboundType = msg.type;
     if (this.peerLost) this.onPeerReturned();
 
     switch (msg.type) {
       case 'play':
-        this.applyPlayCommand(msg.position, msg.executeAt);
+        this.applyPlayCommand(msg.position, msg.executeAt, true);
         break;
       case 'pause':
-        this.onPauseCommand();
+        this.onPauseCommand(msg.position);
         break;
       case 'seek':
-        this.applySeekCommand(msg.position, msg.executeAt, msg.wasPlaying);
+        this.applySeekCommand(msg.position, msg.executeAt, msg.wasPlaying, true);
         break;
       case 'heartbeat':
         this.onHeartbeat(msg);
@@ -530,9 +609,22 @@ export class PlayerEngine {
 
   // ------------------------------------------------------------------ §6.2
 
-  private applyPlayCommand(position: number, executeAt: number): void {
+  private applyPlayCommand(position: number, executeAt: number, fromPeer: boolean): void {
     const v = this.video;
     if (!v) return;
+    if (fromPeer) {
+      // Same staleness problem as the pause (see notePeerState): whatever her
+      // last heartbeat said, from executeAt onwards she is playing, and if we
+      // leave a pre-pause heartbeat in place projectPeer keeps advancing a
+      // position that stopped moving minutes ago.
+      //
+      // `position` is the anchor, which is a LOWER bound on where she will be —
+      // she waits out her own lead if she is ahead of it. Under-reading her
+      // position is the safe direction: a min() anchor that is too low costs a
+      // rewatch, never a skip (§4.1). The next heartbeat replaces it with the
+      // real figure within 3s.
+      this.notePeerState(position, true, executeAt);
+    }
     this.cancelPending();
 
     // Clear any stale nudge FIRST — back to baseRate, not a literal 1.0. A
@@ -572,9 +664,14 @@ export class PlayerEngine {
    * absorbed for free at the next resume by §6.2. "Fixing" it here would be a
    * visible rewind that buys nothing (§6.1).
    */
-  private onPauseCommand(): void {
+  private onPauseCommand(position: number): void {
     const v = this.video;
     if (!v) return;
+    // Her last heartbeat says `playing: true`, and projectPeer would go on
+    // extrapolating from it for as long as the pause lasts — a stopped peer
+    // drifting forward at 1x in our model, which then poisons the min() anchor
+    // at the next resume. The pause carries her exact position, so take it.
+    this.notePeerState(position, false);
     // A play scheduled before this pause must not survive it.
     this.cancelPending();
     this.waitingToResume = false;
@@ -586,9 +683,17 @@ export class PlayerEngine {
 
   // ------------------------------------------------------------------ §6.3
 
-  private applySeekCommand(position: number, executeAt: number, wasPlaying: boolean): void {
+  private applySeekCommand(
+    position: number,
+    executeAt: number,
+    wasPlaying: boolean,
+    fromPeer: boolean,
+  ): void {
     const v = this.video;
     if (!v) return;
+    // A seek position is authoritative for both sides, so unlike the play case
+    // this is her exact position from executeAt on, not a bound.
+    if (fromPeer) this.notePeerState(position, wasPlaying, executeAt);
     this.cancelPending();
     this.waitingToResume = false;
     this.restoreRate();
@@ -624,6 +729,9 @@ export class PlayerEngine {
     this.lastProcessedAt = msg.at;
 
     this.peer = { position: msg.position, playing: msg.playing, at: msg.at };
+    if (Number.isFinite(msg.rttMs) && (msg.rttMs as number) >= 0) {
+      this.peerRttMs = msg.rttMs as number;
+    }
 
     const v = this.video;
     if (!v) return;
@@ -636,7 +744,10 @@ export class PlayerEngine {
 
     // Guard 3 — jitter-scaled deadband (§7.3). On a link whose RTT swings, the
     // offset estimate carries that uncertainty and small drift is unmeasurable.
-    this.deadbandS = Math.max(MIN_DEADBAND_S, (this.transport.rttStdDevMs / 1000) * 2);
+    this.deadbandS = Math.min(
+      MAX_DEADBAND_S,
+      Math.max(MIN_DEADBAND_S, (this.transport.rttStdDevMs / 1000) * 2),
+    );
 
     // Guard 2 — post-action cooldown (§7.3). Her in-flight heartbeats still
     // describe the world before our command landed. Acting on them is
@@ -806,6 +917,20 @@ export class PlayerEngine {
     this.driftMs = null;
   }
 
+  /**
+   * Record what a COMMAND implies about her, so projectPeer stops extrapolating
+   * a heartbeat the command has already invalidated.
+   *
+   * `at` may sit in the future for a scheduled command; projectPeer clamps
+   * elapsed at zero, so until it arrives this reads as "she is at `position`",
+   * which is exactly right. lastProcessedAt is deliberately left alone — it
+   * belongs to the heartbeat ordering guard (§7.3), and bumping it to a
+   * scheduled executeAt would silently drop every real heartbeat until then.
+   */
+  private notePeerState(position: number, playing: boolean, at?: number): void {
+    this.peer = { position, playing, at: at ?? this.now() };
+  }
+
   private projectPeer(hb: PeerHeartbeat): number {
     const elapsed = (this.now() - hb.at) / 1000;
     return hb.playing ? hb.position + Math.max(0, elapsed) : hb.position;
@@ -834,11 +959,13 @@ export class PlayerEngine {
   private sendHeartbeat(): void {
     const v = this.video;
     if (!v) return;
+    this.heartbeatsSent++;
     this.transport.send({
       type: 'heartbeat',
       position: v.currentTime,
       playing: !v.paused,
       at: this.now(),
+      rttMs: Math.round(this.transport.rttMs),
     });
   }
 
@@ -848,7 +975,8 @@ export class PlayerEngine {
     this.stopDropoutWatch();
     this.lastPeerContactAt = this.now();
     this.visibleSince = this.now();
-    this.dropoutTimer = setInterval(() => this.checkDropout(), 1_000);
+    this.lastWatchTickAt = this.now();
+    this.dropoutTimer = setInterval(() => this.checkDropout(), DROPOUT_TICK_MS);
   }
 
   private stopDropoutWatch(): void {
@@ -857,8 +985,42 @@ export class PlayerEngine {
   }
 
   private checkDropout(): void {
-    if (this.peerLost) return;
-    const hidden = typeof document !== 'undefined' && document.hidden;
+    const tickAt = this.now();
+    // How much later than its 1s cadence did this tick actually run? A browser
+    // that is not running our timers is not running our heartbeats either, so a
+    // late tick is evidence about US, not about her.
+    const slip = Math.max(0, tickAt - this.lastWatchTickAt - DROPOUT_TICK_MS);
+    this.lastWatchTickAt = tickAt;
+
+    if (this.peerLost) {
+      // §8 recovery used to be entirely passive: peerLost was cleared only by an
+      // inbound message, and this method returned here forever. That works while
+      // ONE side is lost, because the healthy side keeps heartbeating and the
+      // lost side hears it within a beat. When BOTH sides declare it at the same
+      // moment — which is exactly what happens when both windows are starved
+      // together, e.g. focus moves to a third app — neither has any reason to
+      // speak and neither watchdog ever looks again. That is a permanent
+      // deadlock, and the fix is to keep talking rather than to keep waiting.
+      this.probeWhileLost(tickAt);
+      return;
+    }
+
+    if (slip > TIMER_STARVED_MS) {
+      // Forgive exactly the interval we were frozen for. Without this the
+      // strict 8s limit is applied across a gap in which we could not have
+      // heard anything, and both sides accuse each other on the same tick.
+      this.lastPeerContactAt += slip;
+      return;
+    }
+
+    // `document.hidden` is false for a window that is merely unfocused or
+    // occluded, yet a browser throttles those too — so focus has to count as
+    // well, or the tolerant limit never applies in the case that needs it most:
+    // two side-by-side windows while the person is looking at a third.
+    const hidden =
+      typeof document !== 'undefined' &&
+      (document.hidden ||
+        (typeof document.hasFocus === 'function' && !document.hasFocus()));
     const limit = hidden ? HIDDEN_DROPOUT_MS : DROPOUT_MS;
     if (this.now() - this.lastPeerContactAt <= limit) return;
     // Just back in the foreground: her heartbeat deserves a moment to arrive
@@ -866,6 +1028,8 @@ export class PlayerEngine {
     if (!hidden && this.now() - this.visibleSince < VISIBILITY_GRACE_MS) return;
 
     this.peerLost = true;
+    this.probesSinceLost = 0;
+    this.recordDropoutEvent('declared-lost', { slip, limit });
     this.resyncPending = true;
     this.cancelPending();
     this.waitingToResume = false;
@@ -875,7 +1039,66 @@ export class PlayerEngine {
     this.notify();
   }
 
+  /**
+   * Keep speaking while we believe she is gone (§8).
+   *
+   * A heartbeat is the probe: it is what she is waiting for, it carries our
+   * position so she can compute min() the moment she hears it, and it costs one
+   * small frame a second against a relay budget of fifty. The instant either
+   * side's timers resume, contact is re-established in one beat — from either
+   * direction, so it no longer matters which of the two woke up first.
+   */
+  private probeWhileLost(tickAt: number): void {
+    if (tickAt - this.lastProbeAt < PROBE_INTERVAL_MS) return;
+    this.lastProbeAt = tickAt;
+    this.probesSinceLost++;
+    this.sendHeartbeat();
+    // Every tenth probe, not every one: enough to show whether the probes are
+    // going out and nothing is coming back, without flooding the log.
+    if (this.probesSinceLost % 10 === 0) {
+      this.recordDropoutEvent('still-lost', { probes: this.probesSinceLost });
+    }
+  }
+
+  /**
+   * One line of §8 forensics. The engine cannot see the socket or the send
+   * queue, so it asks the transport for whatever it is willing to say — via
+   * feature detection, so SyncTransport stays exactly as §10 defines it.
+   */
+  private recordDropoutEvent(event: string, extra: Record<string, unknown>): void {
+    const doc = typeof document !== 'undefined' ? document : null;
+    const transport = this.transport as { debugInfo?: () => Record<string, unknown> };
+    const fields: Record<string, unknown> = {
+      event,
+      ...extra,
+      sinceContactMs: this.lastPeerContactAt ? this.now() - this.lastPeerContactAt : null,
+      sinceInboundMs: this.lastInboundAt ? this.now() - this.lastInboundAt : null,
+      lastInbound: this.lastInboundType,
+      heartbeatsSent: this.heartbeatsSent,
+      messagesReceived: this.messagesReceived,
+      videoAttached: this.video !== null,
+      heartbeatTimer: this.heartbeatTimer !== null,
+      hidden: doc ? doc.hidden : null,
+      focused: doc && typeof doc.hasFocus === 'function' ? doc.hasFocus() : null,
+      ...(transport.debugInfo ? transport.debugInfo() : {}),
+    };
+
+    const line = `[ruyah §8] ${new Date().toISOString()} ${JSON.stringify(fields)}`;
+    this.dropoutLog.push(line);
+    if (this.dropoutLog.length > 60) this.dropoutLog.shift();
+    if (process.env.NODE_ENV !== 'production') console.warn(line);
+  }
+
+  /**
+   * The §8 log, for pasting somewhere after the fact. Reachable from the
+   * console as `__ruyah.dropoutReport()` — see the constructor.
+   */
+  dropoutReport(): string {
+    return this.dropoutLog.join('\n');
+  }
+
   private onPeerReturned(): void {
+    this.recordDropoutEvent('recovered', { via: this.lastInboundType });
     this.peerLost = false;
     // Fresh heartbeat right away so she can compute min(positions) too.
     this.sendHeartbeat();
@@ -908,6 +1131,7 @@ export class PlayerEngine {
       // The transport has already thrown away its clock estimate and is
       // measuring afresh (§8). Drop our stale peer picture with it.
       this.peer = null;
+      this.peerRttMs = 0;
       this.lastProcessedAt = 0;
       this.lastPeerContactAt = this.now();
       this.resetDriftState();

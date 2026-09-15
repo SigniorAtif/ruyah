@@ -230,7 +230,12 @@ wss.on('connection', (ws, req) => {
     // no longer the reference, so forwarding one would measure the wrong thing.
     if (CLOCK_TYPES.has(type)) {
       if (type === 'ping') {
-        sendJson(ws, { type: 'pong', t0: parsed.msg.t0, t1 });
+        // Four-stamp NTP: t1 is when this frame arrived, t2 is when the answer
+        // leaves. Everything between them — parsing, rate-limit bookkeeping,
+        // event-loop delay — is time spent on one leg only, so the client
+        // subtracts it instead of splitting it down the middle and biasing its
+        // offset by half of whatever this server happened to be busy with.
+        sendJson(ws, { type: 'pong', t0: parsed.msg.t0, t1, t2: Date.now() });
       }
       // A client has no reason to send `pong`; it is in the union because the
       // server sends it. Dropping it is enough — it is well-formed, so closing

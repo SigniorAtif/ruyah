@@ -43,7 +43,7 @@ export function DevPanel() {
 
       <Slider
         label="latency"
-        suffix="ms one-way"
+        suffix="ms round-trip"
         min={0}
         max={1000}
         step={10}

@@ -104,7 +104,7 @@ export class MockTransport implements SimulatedTransport {
     this.setState('connecting');
 
     const channel = new BroadcastChannel(`${this.channelPrefix}:${roomId}`);
-    channel.onmessage = (ev: MessageEvent<Envelope>) => this.receive(ev.data);
+    channel.onmessage = (ev: MessageEvent<Envelope>) => this.receiveLater(ev.data);
     this.channel = channel;
 
     this.clock.start();
@@ -163,23 +163,62 @@ export class MockTransport implements SimulatedTransport {
   }
 
   /**
-   * One-way delay per message, drawn independently. Independent draws are the
-   * point: they reorder packets, which is what §7.3's stale-heartbeat guard has
-   * to survive.
+   * Delay for ONE traversal of this client's simulated link: half the
+   * configured latency out, half of it back (see receiveLater).
+   *
+   * Splitting it is load-bearing, not cosmetic. An outbound-only delay is a
+   * path where one leg is slower than the other by the full latency, and the
+   * rtt/2 in ClockSync cannot see asymmetry — the delayed client's offset comes
+   * out wrong by half of it. Every executeAt that client writes then fires half
+   * the latency early in real time, so whoever has the slow link always starts
+   * playing first, and the drift machine reads a flat zero the whole time
+   * because the same bias cancels out of its heartbeat projection. Symmetric
+   * halves cost the same round trip and leave the estimate unbiased.
+   *
+   * Each draw is independent, which is the other half of the point: it reorders
+   * packets, which is what §7.3's stale-heartbeat guard has to survive.
    */
+  private legDelayMs(): number {
+    const jitter =
+      this.net.jitterMs > 0 ? (Math.random() * 2 - 1) * this.net.jitterMs : 0;
+    return Math.max(0, this.net.latencyMs / 2 + jitter / 2);
+  }
+
   private deliverLater(envelope: Envelope): void {
     const channel = this.channel;
     if (!channel) return;
 
-    const jitter =
-      this.net.jitterMs > 0 ? (Math.random() * 2 - 1) * this.net.jitterMs : 0;
-    const delay = Math.max(0, this.net.latencyMs + jitter);
+    const delay = this.legDelayMs();
+    if (delay <= 0) {
+      channel.postMessage(envelope);
+      return;
+    }
 
     const timer = setTimeout(() => {
       this.inFlight.delete(timer);
       // Re-check: the cable may have been pulled while this packet was in flight.
       if (!this.channel || !this.net.connected) return;
       this.channel.postMessage(envelope);
+    }, delay);
+    this.inFlight.add(timer);
+  }
+
+  /** The inbound half of this client's simulated link. */
+  private receiveLater(envelope: Envelope): void {
+    // Our own traffic comes back on the same channel and is discarded in
+    // receive(); short-circuit it here so it never occupies a timer.
+    if (envelope.from === this.userId) return;
+
+    const delay = this.legDelayMs();
+    if (delay <= 0) {
+      this.receive(envelope);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      this.inFlight.delete(timer);
+      if (!this.channel || !this.net.connected) return;
+      this.receive(envelope);
     }, delay);
     this.inFlight.add(timer);
   }
@@ -320,6 +359,22 @@ export class MockTransport implements SimulatedTransport {
   }
 
   // ------------------------------------------------------------- simulation
+
+  /** Counterpart of WebSocketTransport.debugInfo; see there. */
+  debugInfo(): Record<string, unknown> {
+    return {
+      socket: this.channel ? 'channel' : 'null',
+      transport: this.stateValue,
+      netConnected: this.net.connected,
+      latencyMs: this.net.latencyMs,
+      jitterMs: this.net.jitterMs,
+      dropRate: this.net.dropRate,
+      inFlight: this.inFlight.size,
+      peerPresent: this.peerPresentValue,
+      clockEstimate: this.clock.hasEstimate,
+      offsetMs: Math.round(this.clock.offsetMs),
+    };
+  }
 
   getNetwork(): NetworkConditions {
     return { ...this.net };

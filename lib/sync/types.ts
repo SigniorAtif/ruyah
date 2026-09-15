@@ -16,10 +16,19 @@ export type SyncMessage =
   // (§6.2), so `position` is reported for information, not to correct toward.
   | { type: 'pause'; position: number }
   | { type: 'seek'; position: number; executeAt: number; wasPlaying: boolean }
-  | { type: 'heartbeat'; position: number; playing: boolean; at: number }
+  // rttMs is this sender's own measured round trip, piggybacked so the peer can
+  // size its scheduling lead against the SLOWER of the two links rather than
+  // only its own (§6). Optional: a peer that does not send it is simply not
+  // counted, which is the pre-existing behaviour.
+  | { type: 'heartbeat'; position: number; playing: boolean; at: number; rttMs?: number }
   | { type: 'ready'; userId: string; fingerprint: string }
   | { type: 'ping'; t0: number }
-  | { type: 'pong'; t0: number; t1: number }
+  // Four-stamp NTP (§5.1). t1 is receipt and t2 is dispatch, both on the
+  // responder's clock; the gap between them is the responder's own processing
+  // time, which is pure asymmetry and has to be subtracted rather than split.
+  // t2 is optional so an older responder that only sends t1 still works — the
+  // estimate then degrades to the three-stamp form it always used.
+  | { type: 'pong'; t0: number; t1: number; t2?: number }
   | { type: 'chat'; userId: string; text: string; at: number }; // wire only, no UI in Phase 1
 
 /**
@@ -103,7 +112,17 @@ export interface SyncTransport {
 
 /** Knobs the dev panel drives (spec §10). Not part of the production seam. */
 export interface NetworkConditions {
-  /** One-way delay applied to every outbound message, ms. */
+  /**
+   * Delay this client's link adds to a round trip, ms.
+   *
+   * Applied as half on the way out and half on the way in, deliberately. An
+   * outbound-only delay is a perfectly asymmetric path, and the rtt/2 in
+   * ClockSync cannot see asymmetry — it would hand this client an offset
+   * wrong by half the injected latency and desync every scheduled command by
+   * that much, with the drift machine reading zero because the same bias
+   * cancels out of its own maths. Splitting it keeps the simulated link
+   * honest.
+   */
   latencyMs: number;
   /** Uniform +/- jitter added to latencyMs, ms. Causes real packet reordering. */
   jitterMs: number;
