@@ -1,0 +1,154 @@
+'use client';
+
+import { useEffect, type RefObject } from 'react';
+import { formatClock } from '@/lib/player/fingerprint';
+import { getEngine, useRuya } from '@/lib/store';
+
+const SEEK_SMALL_S = 5;
+const SEEK_LARGE_S = 10;
+const VOLUME_STEP = 0.05;
+
+/**
+ * Whether the focused element should keep this key for itself.
+ *
+ * Rule 5 is about not stealing typing, but the same reasoning covers native
+ * activation: Space on a focused button must press that button, and arrows on a
+ * focused slider must move that slider. Anything else and keyboard users lose
+ * the controls entirely. Every other key still reaches the shortcuts.
+ */
+function defersToTarget(target: EventTarget | null, key: string): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+
+  const activation = key === ' ' || key === 'Enter';
+  const arrowish = [
+    'ArrowLeft',
+    'ArrowRight',
+    'ArrowUp',
+    'ArrowDown',
+    'Home',
+    'End',
+    'PageUp',
+    'PageDown',
+  ].includes(key);
+
+  switch (target.tagName) {
+    case 'TEXTAREA':
+    case 'SELECT':
+      return true;
+    case 'INPUT': {
+      const type = (target as HTMLInputElement).type;
+      // Chat lands here in Phase 2; a text field keeps every key.
+      if (!['range', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(type)) {
+        return true;
+      }
+      return type === 'range' ? arrowish || activation : activation;
+    }
+    case 'BUTTON':
+    case 'A':
+      return activation;
+    default:
+      return false;
+  }
+}
+
+export function useKeyboardShortcuts(containerRef: RefObject<HTMLDivElement | null>) {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      // Leave the browser's own chords alone.
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.repeat && event.key === ' ') return; // holding space is not a rattle of toggles
+      if (defersToTarget(event.target, event.key)) return;
+
+      const engine = getEngine();
+      const { status, showToast } = useRuya.getState();
+      if (!engine || !status) return;
+
+      const key = event.key;
+      const seekBy = (delta: number) => {
+        // Rule 3: never touches video.currentTime — the engine coalesces the
+        // burst and broadcasts one command, so anti-echo and §6.3 still apply.
+        const moved = engine.seekBy(delta);
+        if (!moved) return;
+        const sign = moved.delta >= 0 ? '+' : '−';
+        showToast(`${sign}${Math.abs(Math.round(moved.delta))}s · ${formatClock(moved.target)}`);
+      };
+
+      const setVolume = (next: number) => {
+        const clamped = Math.min(1, Math.max(0, next));
+        // Volume is local: it never reaches the transport (rule 1).
+        engine.setVolume(clamped);
+        if (clamped > 0 && status.muted) engine.setMuted(false);
+        showToast(clamped === 0 ? 'Muted' : `Volume ${Math.round(clamped * 100)}%`);
+      };
+
+      switch (key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          event.preventDefault(); // rule 4: no page scroll
+          engine.togglePlay();
+          return;
+
+        case 'ArrowLeft':
+          event.preventDefault();
+          seekBy(-SEEK_SMALL_S);
+          return;
+        case 'ArrowRight':
+          event.preventDefault();
+          seekBy(SEEK_SMALL_S);
+          return;
+        case 'j':
+        case 'J':
+          seekBy(-SEEK_LARGE_S);
+          return;
+        case 'l':
+        case 'L':
+          seekBy(SEEK_LARGE_S);
+          return;
+
+        case 'ArrowUp':
+          event.preventDefault();
+          setVolume((status.muted ? 0 : status.volume) + VOLUME_STEP);
+          return;
+        case 'ArrowDown':
+          event.preventDefault();
+          setVolume((status.muted ? 0 : status.volume) - VOLUME_STEP);
+          return;
+
+        case 'm':
+        case 'M': {
+          const next = !status.muted;
+          engine.setMuted(next);
+          showToast(next ? 'Muted' : `Volume ${Math.round(status.volume * 100)}%`);
+          return;
+        }
+
+        case 'f':
+        case 'F': {
+          const el = containerRef.current;
+          if (!el) return;
+          // Fullscreen is a property of this browser window, not of the film.
+          if (document.fullscreenElement) void document.exitFullscreen();
+          else void el.requestFullscreen();
+          return;
+        }
+
+        default:
+          break;
+      }
+
+      if (key >= '0' && key <= '9') {
+        if (!status.duration) return;
+        event.preventDefault();
+        // An absolute jump, so it does not join the coalescing burst.
+        const target = (status.duration * Number(key)) / 10;
+        engine.seek(target);
+        useRuya.getState().showToast(`Jump to ${formatClock(target)}`);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [containerRef]);
+}
