@@ -118,6 +118,10 @@ export function DevPanel() {
           label="rtt"
           value={`${Math.round(status?.rttMs ?? 0)} ±${Math.round(status?.rttStdDevMs ?? 0)} ms`}
         />
+        <Readout
+          label="measured loss"
+          value={`${Math.round((status?.lossRate ?? 0) * 100)} %`}
+        />
         <Readout label="rate" value={(status?.playbackRate ?? 1).toFixed(2)} />
         <Readout label="confirmations" value={`${status?.pendingHardDrift ?? 0}/3`} />
         <Readout label="role" value={status?.isAuthority ? 'authority' : 'follower'} />

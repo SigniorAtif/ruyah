@@ -20,7 +20,15 @@ export type SyncMessage =
   // size its scheduling lead against the SLOWER of the two links rather than
   // only its own (§6). Optional: a peer that does not send it is simply not
   // counted, which is the pre-existing behaviour.
-  | { type: 'heartbeat'; position: number; playing: boolean; at: number; rttMs?: number }
+  | {
+      type: 'heartbeat';
+      position: number;
+      playing: boolean;
+      at: number;
+      rttMs?: number;
+      /** Sender's measured loss, so the receiver can size §8 against the worse link. */
+      lossRate?: number;
+    }
   | { type: 'ready'; userId: string; fingerprint: string }
   | { type: 'ping'; t0: number }
   // Four-stamp NTP (§5.1). t1 is receipt and t2 is dispatch, both on the
@@ -106,6 +114,7 @@ export interface SyncTransport {
   syncedNow(): number; // reference-aligned epoch ms (§2: peer in Phase 1, server in Phase 2)
   readonly rttMs: number;
   readonly rttStdDevMs: number; // drives the jitter deadband, §7.3
+  readonly lossRate: number; // 0..1, unanswered pings; sizes §8's dropout probes
   readonly isAuthority: boolean;
   readonly state: TransportState;
 }

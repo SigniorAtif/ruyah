@@ -54,6 +54,21 @@ const DROPOUT_TICK_MS = 1_000;
 const TIMER_STARVED_MS = 1_500;
 /** While the peer is presumed lost, probe this often to re-establish contact. */
 const PROBE_INTERVAL_MS = 1_000;
+/**
+ * Before declaring her gone, ask directly and wait — §8's limit on its own is a
+ * bet that a couple of 3s heartbeats survive the link, and on a lossy one that
+ * bet loses constantly. At 50% loss two missed heartbeats happen one window in
+ * eight, which is a false alarm every half minute.
+ *
+ * So silence past the limit only opens a SUSPECT phase: one probe per tick,
+ * declared lost only when every one of them also goes unanswered. The count is
+ * sized from measured loss to keep a false alarm near this probability, with a
+ * floor so a clean link still confirms, and a ceiling so a hopeless link is
+ * still called within a few seconds rather than never.
+ */
+const SUSPECT_FALSE_ALARM = 0.01;
+const SUSPECT_MIN_PROBES = 3;
+const SUSPECT_MAX_PROBES = 10;
 /** §12 — background tabs stutter; be tolerant rather than crying dropout. */
 const HIDDEN_DROPOUT_MS = 30_000;
 /** After returning to the foreground, let one heartbeat try to land first. */
@@ -132,6 +147,8 @@ export interface EngineStatus {
 
   rttMs: number;
   rttStdDevMs: number;
+  /** Worse of the two links, 0..1 — what §8 sizes its probes against. */
+  lossRate: number;
   isAuthority: boolean;
   manualOffsetSec: number;
   mediaError: string | null;
@@ -185,6 +202,10 @@ export class PlayerEngine {
   /** When the §8 watchdog last ran, so it can tell its own lateness from hers. */
   private lastWatchTickAt = 0;
   private lastProbeAt = 0;
+  /** Consecutive unanswered probes in the §8 suspect phase. */
+  private suspectProbes = 0;
+  /** Her measured loss, from heartbeats; ours may not be the worse of the two. */
+  private peerLossRate = 0;
 
   // ---- §8 diagnostics. Cheap counters plus a ring buffer, so the state that
   // led to a peer-lost is still there to read after it has latched.
@@ -376,6 +397,7 @@ export class PlayerEngine {
 
       rttMs: this.transport.rttMs,
       rttStdDevMs: this.transport.rttStdDevMs,
+      lossRate: this.effectiveLossRate(),
       isAuthority: this.transport.isAuthority,
       manualOffsetSec: this.manualOffsetSec,
       mediaError: this.mediaError,
@@ -732,6 +754,9 @@ export class PlayerEngine {
     if (Number.isFinite(msg.rttMs) && (msg.rttMs as number) >= 0) {
       this.peerRttMs = msg.rttMs as number;
     }
+    if (Number.isFinite(msg.lossRate) && (msg.lossRate as number) >= 0) {
+      this.peerLossRate = Math.min(1, msg.lossRate as number);
+    }
 
     const v = this.video;
     if (!v) return;
@@ -966,6 +991,7 @@ export class PlayerEngine {
       playing: !v.paused,
       at: this.now(),
       rttMs: Math.round(this.transport.rttMs),
+      lossRate: Number(this.transport.lossRate.toFixed(3)),
     });
   }
 
@@ -1022,14 +1048,31 @@ export class PlayerEngine {
       (document.hidden ||
         (typeof document.hasFocus === 'function' && !document.hasFocus()));
     const limit = hidden ? HIDDEN_DROPOUT_MS : DROPOUT_MS;
-    if (this.now() - this.lastPeerContactAt <= limit) return;
+    if (this.now() - this.lastPeerContactAt <= limit) {
+      this.suspectProbes = 0;
+      return;
+    }
     // Just back in the foreground: her heartbeat deserves a moment to arrive
     // before we accuse her of being gone (§12).
     if (!hidden && this.now() - this.visibleSince < VISIBILITY_GRACE_MS) return;
 
+    // Silence is not yet absence. Ask, and keep asking, before believing it.
+    const needed = this.probesBeforeLost();
+    if (this.suspectProbes < needed) {
+      this.suspectProbes++;
+      this.sendHeartbeat();
+      return;
+    }
+
     this.peerLost = true;
     this.probesSinceLost = 0;
-    this.recordDropoutEvent('declared-lost', { slip, limit });
+    this.recordDropoutEvent('declared-lost', {
+      slip,
+      limit,
+      probes: this.suspectProbes,
+      lossRate: Number(this.effectiveLossRate().toFixed(3)),
+    });
+    this.suspectProbes = 0;
     this.resyncPending = true;
     this.cancelPending();
     this.waitingToResume = false;
@@ -1048,6 +1091,28 @@ export class PlayerEngine {
    * side's timers resume, contact is re-established in one beat — from either
    * direction, so it no longer matters which of the two woke up first.
    */
+  /**
+   * Loss of the worse of the two links. Hers matters as much as ours — her
+   * heartbeats are what we are waiting for — and she reports it in every one,
+   * so the last figure we heard is the best available even once she goes quiet.
+   */
+  private effectiveLossRate(): number {
+    return Math.max(this.transport.lossRate, this.peerLossRate);
+  }
+
+  /**
+   * How many unanswered probes it takes to be confident, given the link.
+   *
+   * With independent loss p, n probes all going missing has probability p^n, so
+   * the n that holds that at SUSPECT_FALSE_ALARM is log(target)/log(p).
+   */
+  private probesBeforeLost(): number {
+    const loss = Math.min(0.95, Math.max(0, this.effectiveLossRate()));
+    if (loss <= 0) return SUSPECT_MIN_PROBES;
+    const needed = Math.ceil(Math.log(SUSPECT_FALSE_ALARM) / Math.log(loss));
+    return Math.min(SUSPECT_MAX_PROBES, Math.max(SUSPECT_MIN_PROBES, needed));
+  }
+
   private probeWhileLost(tickAt: number): void {
     if (tickAt - this.lastProbeAt < PROBE_INTERVAL_MS) return;
     this.lastProbeAt = tickAt;
@@ -1132,6 +1197,8 @@ export class PlayerEngine {
       // measuring afresh (§8). Drop our stale peer picture with it.
       this.peer = null;
       this.peerRttMs = 0;
+      this.peerLossRate = 0;
+      this.suspectProbes = 0;
       this.lastProcessedAt = 0;
       this.lastPeerContactAt = this.now();
       this.resetDriftState();

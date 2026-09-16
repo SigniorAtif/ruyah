@@ -342,6 +342,10 @@ export class MockTransport implements SimulatedTransport {
     return this.clock.rttStdDevMs;
   }
 
+  get lossRate(): number {
+    return this.clock.lossRate;
+  }
+
   get state(): TransportState {
     return this.stateValue;
   }

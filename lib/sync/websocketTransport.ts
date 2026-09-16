@@ -591,6 +591,10 @@ export class WebSocketTransport implements SimulatedTransport {
     return this.clock.rttStdDevMs;
   }
 
+  get lossRate(): number {
+    return this.clock.lossRate;
+  }
+
   get isAuthority(): boolean {
     return this.isAuthorityValue;
   }

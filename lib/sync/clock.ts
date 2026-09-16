@@ -57,6 +57,8 @@ const DISAGREEMENT_MS = 25;
 const CONVERGING_INTERVAL_MS = 3_000;
 /** Rolling window of RTTs used for the jitter deadband (§7.3). */
 const RTT_WINDOW = 20;
+/** Bursts kept for the loss estimate. Enough to smooth, short enough to react. */
+const LOSS_WINDOW = 5;
 /**
  * Smoothing for subsequent estimates. Spec: never hard-swap the offset
  * mid-playback — a step change would teleport every scheduled executeAt.
@@ -111,6 +113,8 @@ export class ClockSync {
 
   /** All recent RTTs, unfiltered — the jitter deadband wants the bad ones too. */
   private rttWindow: number[] = [];
+  /** Per-burst fraction of pings that never came back. */
+  private lossWindow: number[] = [];
 
   private burst: Sample[] = [];
   private burstActive = false;
@@ -171,6 +175,19 @@ export class ClockSync {
     return stdDev(this.rttWindow);
   }
 
+  /**
+   * Fraction of pings that went unanswered, over the last few bursts.
+   *
+   * A burst is a free loss probe: it sends a known number and counts what comes
+   * back. §8 needs this because its dropout limit is otherwise a fixed bet that
+   * a couple of heartbeats will survive — a bet that loses constantly on a lossy
+   * link and declares a peer gone who is simply hard to hear.
+   */
+  get lossRate(): number {
+    if (this.lossWindow.length === 0) return 0;
+    return this.lossWindow.reduce((a, b) => a + b, 0) / this.lossWindow.length;
+  }
+
   start(): void {
     if (this.running) return;
     this.running = true;
@@ -199,6 +216,7 @@ export class ClockSync {
     this.offsetMsValue = 0;
     this.rttMsValue = 0;
     this.rttWindow = [];
+    this.lossWindow = [];
     if (this.running) {
       this.clearBurstTimers();
       if (this.nextBurstTimer !== null) {
@@ -311,6 +329,8 @@ export class ClockSync {
     const samples = this.burst;
     this.burst = [];
 
+    this.recordLoss(samples.length);
+
     if (samples.length === 0) {
       // No peer answering yet. Try again soon rather than waiting out 30s.
       this.scheduleNextBurst(EMPTY_BURST_RETRY_MS);
@@ -344,6 +364,12 @@ export class ClockSync {
     this.scheduleNextBurst(
       disagreement > DISAGREEMENT_MS ? CONVERGING_INTERVAL_MS : RESYNC_INTERVAL_MS,
     );
+  }
+
+  private recordLoss(received: number): void {
+    const lost = Math.max(0, SAMPLE_COUNT - received) / SAMPLE_COUNT;
+    this.lossWindow.push(lost);
+    if (this.lossWindow.length > LOSS_WINDOW) this.lossWindow.shift();
   }
 
   private scheduleNextBurst(delayMs: number): void {
