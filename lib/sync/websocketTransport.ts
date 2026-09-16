@@ -515,6 +515,10 @@ export class WebSocketTransport implements SyncTransport {
     return this.clock.rttStdDevMs;
   }
 
+  get lossRate(): number {
+    return this.clock.lossRate;
+  }
+
   get isAuthority(): boolean {
     return this.isAuthorityValue;
   }
