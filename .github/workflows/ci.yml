@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main, dev]
+  # Lets a run be started by hand from the Actions tab. Worth having for its own
+  # sake, and the only way to re-run CI on a pull request whose checks never
+  # got created in the first place.
+  workflow_dispatch:
 
 jobs:
   verify:
