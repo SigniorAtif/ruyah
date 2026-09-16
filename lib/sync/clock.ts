@@ -42,6 +42,19 @@ const BURST_TIMEOUT_MS = 3_000;
 const RESYNC_INTERVAL_MS = 30_000;
 /** Retry sooner when a burst came back empty — usually means no peer yet. */
 const EMPTY_BURST_RETRY_MS = 2_000;
+/**
+ * A fresh estimate this far from the current one means the path really moved —
+ * a route change, a network swap — rather than ordinary jitter.
+ */
+const DISAGREEMENT_MS = 25;
+/**
+ * Cadence while converging on a moved path. SMOOTHING deliberately refuses to
+ * step the offset (it would teleport every scheduled executeAt), so a real
+ * change needs several bursts to land; at the normal 30s cadence that is two
+ * minutes of being measurably wrong. Measuring more often is the way to
+ * converge quickly without ever moving the clock in a jump.
+ */
+const CONVERGING_INTERVAL_MS = 3_000;
 /** Rolling window of RTTs used for the jitter deadband (§7.3). */
 const RTT_WINDOW = 20;
 /**
@@ -63,7 +76,7 @@ export interface ClockSyncOptions {
    * below). In server mode this is recorded but has no effect on timing.
    */
   isAuthority: boolean;
-  /** Defaults to 'peer' so Phase 1's MockTransport behaviour is unchanged. */
+  /** Defaults to 'peer'; the relay transport asks for 'server'. */
   reference?: ClockReference;
   /** Injectable raw clock, for tests. Defaults to Date.now. */
   now?: () => number;
@@ -218,24 +231,47 @@ export class ClockSync {
       // a ping arriving here is not ours to answer. Answering would put a
       // client stamp on the wire where only server stamps belong.
       if (this.reference === 'server') return true;
-      // t1 is the responder's RAW clock. Answering with syncedNow() would fold
-      // our own estimate back into the peer's, and the loop would run away.
-      this.sendMsg({ type: 'pong', t0: msg.t0, t1: this.now() });
+      // t1/t2 are the responder's RAW clock. Answering with syncedNow() would
+      // fold our own estimate back into the peer's, and the loop would run away.
+      // Both stamps are taken here, so the pair also carries whatever time this
+      // handler itself costs — asymmetry the requester can then subtract.
+      const t1 = this.now();
+      this.sendMsg({ type: 'pong', t0: msg.t0, t1, t2: this.now() });
       return true;
     }
     if (msg.type === 'pong') {
-      this.recordPong(msg.t0, msg.t1);
+      this.recordPong(msg.t0, msg.t1, msg.t2);
       return true;
     }
     return false;
   }
 
-  private recordPong(t0: number, t1: number): void {
+  /**
+   * Four-stamp NTP (§5.1).
+   *
+   *   t0  we sent          (our clock)
+   *   t1  they received    (their clock)
+   *   t2  they replied     (their clock)
+   *   t3  we received      (our clock)
+   *
+   * rtt excludes their processing time, and the offset is the mean of the two
+   * legs rather than t1 minus a midpoint. The two forms agree when t2 === t1,
+   * which is what an older responder that sends no t2 degrades to.
+   *
+   * What this still cannot see is asymmetry in the PATH itself: with one leg
+   * slower than the other by D, every estimate is wrong by D/2 and no amount
+   * of sampling reveals it. That is why the simulated link splits its injected
+   * a real path is close enough to symmetric for this to hold. A link that is
+   * asymmetric on purpose — anything that delays one direction only — breaks it
+   * outright, so nothing may ever introduce one.
+   */
+  private recordPong(t0: number, t1: number, t2Raw?: number): void {
     if (!this.burstActive) return; // late straggler from a finalized burst
-    const t2 = this.now();
-    const rtt = t2 - t0;
+    const t2 = Number.isFinite(t2Raw) ? (t2Raw as number) : t1;
+    const t3 = this.now();
+    const rtt = t3 - t0 - (t2 - t1);
     if (rtt < 0) return; // clock went backwards mid-flight; unusable
-    const offset = t1 - (t0 + rtt / 2); // add to my clock to get peer clock
+    const offset = (t1 - t0 + (t2 - t3)) / 2; // add to my clock to get peer clock
 
     this.burst.push({ rtt, offset });
     this.rttWindow.push(rtt);
@@ -282,22 +318,33 @@ export class ClockSync {
       return;
     }
 
-    // Discard the worst half by RTT: a long RTT means the two legs were
-    // asymmetric, which is exactly the error the rtt/2 assumption cannot absorb.
     const byRtt = [...samples].sort((a, b) => a.rtt - b.rtt);
     const keep = byRtt.slice(0, Math.max(1, Math.ceil(byRtt.length / 2)));
 
-    const newOffset = median(keep.map((s) => s.offset));
+    // The OFFSET comes from the single fastest sample, not from a median.
+    // Queueing only ever adds delay, and it adds it to one leg at a time, so a
+    // slow sample is a sample whose two legs disagreed — precisely the error
+    // halving the RTT cannot absorb. The fastest round trip in the burst is the
+    // one least contaminated by it. (This is NTP's minimum-delay rule; a median
+    // would average the good sample together with the biased ones.)
+    const newOffset = byRtt[0].offset;
+    // The REPORTED rtt still comes from the fast half's median: it feeds the
+    // play lead and the jitter deadband, where a typical figure is wanted
+    // rather than a best case.
     this.rttMsValue = median(keep.map((s) => s.rtt));
 
     if (!this.hasEstimateValue) {
       this.offsetMsValue = newOffset;
       this.hasEstimateValue = true;
-    } else {
-      this.offsetMsValue += SMOOTHING * (newOffset - this.offsetMsValue);
+      this.scheduleNextBurst(RESYNC_INTERVAL_MS);
+      return;
     }
 
-    this.scheduleNextBurst(RESYNC_INTERVAL_MS);
+    const disagreement = Math.abs(newOffset - this.offsetMsValue);
+    this.offsetMsValue += SMOOTHING * (newOffset - this.offsetMsValue);
+    this.scheduleNextBurst(
+      disagreement > DISAGREEMENT_MS ? CONVERGING_INTERVAL_MS : RESYNC_INTERVAL_MS,
+    );
   }
 
   private scheduleNextBurst(delayMs: number): void {

@@ -11,15 +11,13 @@
  */
 
 import { create } from 'zustand';
-import { MockTransport } from './sync/mockTransport';
 import { WebSocketTransport } from './sync/websocketTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
 import { fingerprintFile } from './player/fingerprint';
 import type {
-  NetworkConditions,
-  SimulatedTransport,
   SyncErrorCode,
   SyncMessage,
+  SyncTransport,
   TransportState,
 } from './sync/types';
 import { isDevMode, saveRelayUrl, validateRelayUrl } from './relayConfig';
@@ -93,11 +91,11 @@ const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let toastSeq = 0;
 
-let transport: SimulatedTransport | null = null;
+let transport: SyncTransport | null = null;
 let engine: PlayerEngine | null = null;
 let unsubscribers: Array<() => void> = [];
 
-export const getTransport = (): SimulatedTransport | null => transport;
+export const getTransport = (): SyncTransport | null => transport;
 export const getEngine = (): PlayerEngine | null => engine;
 
 export type FingerprintStatus = 'idle' | 'hashing' | 'ready' | 'error';
@@ -127,7 +125,6 @@ interface RuyaState {
 
   // --- playback, mirrored out of the engine
   status: EngineStatus | null;
-  network: NetworkConditions | null;
   toast: { id: number; text: string } | null;
 
   /**
@@ -141,21 +138,20 @@ interface RuyaState {
     roomCode: string;
     displayName: string;
     isAuthority: boolean;
-    /** Runtime relay endpoint. Empty selects the mock, in dev mode only. */
+    /** Runtime relay endpoint. Always a real wss:// relay. */
     relayUrl: string;
   }): Promise<void>;
   setFile(file: File): Promise<void>;
   setReady(ready: boolean): void;
   ensureEngine(): PlayerEngine | null;
   showToast(text: string): void;
-  setNetwork(patch: Partial<NetworkConditions>): void;
   leave(): void;
 }
 
 /** Everything in the store that is session state rather than an action. */
 type SessionData = Omit<
   RuyaState,
-  'startSession' | 'setFile' | 'setReady' | 'ensureEngine' | 'showToast' | 'setNetwork' | 'leave'
+  'startSession' | 'setFile' | 'setReady' | 'ensureEngine' | 'showToast' | 'leave'
 >;
 
 /**
@@ -188,7 +184,6 @@ const EMPTY_SESSION: SessionData = {
   peerFingerprint: null,
 
   status: null,
-  network: null,
   toast: null,
   sessionError: null,
 };
@@ -200,39 +195,24 @@ export const useRuya = create<RuyaState>((set, get) => ({
     get().leave();
 
     const trimmed = relayUrl.trim();
-    const devMode = isDevMode();
-
-    // Empty + dev flag is the only way to reach the mock. Without the flag an
-    // empty field is a mistake, not a request for BroadcastChannel — silently
-    // running the mock in production would look like a relay that works and
-    // then never sees the other person.
-    const useMock = trimmed === '' && devMode;
-
-    if (!useMock) {
-      const check = validateRelayUrl(trimmed, devMode);
-      if (!check.ok) {
-        set({
-          sessionError: {
-            code: 'invalid_url',
-            message: check.message ?? 'That relay address is not usable.',
-          },
-        });
-        return;
-      }
+    const check = validateRelayUrl(trimmed, isDevMode());
+    if (!check.ok) {
+      set({
+        sessionError: {
+          code: 'invalid_url',
+          message: check.message ?? 'That relay address is not usable.',
+        },
+      });
+      return;
     }
-    // Persisted even when empty. Empty is a real choice — it selects the mock in
-    // dev mode — and not storing it meant a second tab fell back to the default
-    // relay and tried to reach the internet while the first was on the mock, so
-    // the two never met.
+    // Persisted so a second window opens against the same relay rather than
+    // falling back to the default and never meeting the first.
     saveRelayUrl(trimmed);
 
     const userId = sessionUserId(roomCode, displayName);
-    // §7.2's authority. Over BroadcastChannel the lobby's choice is the only
-    // source of truth; against a relay the server assigns it, and `isAuthority`
-    // below is corrected from the `joined` answer.
-    const t: SimulatedTransport = useMock
-      ? new MockTransport({ isAuthority })
-      : new WebSocketTransport({ url: trimmed });
+    // §7.2's authority is the server's to assign; the lobby's `isAuthority` is
+    // only a starting guess and is corrected from the `joined` answer.
+    const t: SyncTransport = new WebSocketTransport({ url: trimmed });
     transport = t;
 
     unsubscribers.push(
@@ -290,7 +270,6 @@ export const useRuya = create<RuyaState>((set, get) => ({
       userId,
       isAuthority,
       transportState: 'connecting',
-      network: t.getNetwork(),
     });
 
     await t.connect(roomCode, userId);
@@ -392,12 +371,6 @@ export const useRuya = create<RuyaState>((set, get) => ({
       toastTimer = null;
       set({ toast: null });
     }, TOAST_MS);
-  },
-
-  setNetwork(patch) {
-    if (!transport) return;
-    transport.setNetwork(patch);
-    set({ network: transport.getNetwork() });
   },
 
   leave() {

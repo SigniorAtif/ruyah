@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  verify:
+    name: typecheck / lint / build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Next generates the route/layout types (LayoutProps, PageProps, …) that
+      # the app's own signatures refer to. They do not exist in a fresh clone,
+      # so tsc has to come after this, not before it.
+      - run: npx next typegen
+      - run: npx tsc --noEmit
+      - run: npx eslint .
+      - run: npm run build
+
+  no-dev-surface:
+    name: no dev surface on main
+    runs-on: ubuntu-latest
+    # Only the release branch is held to this. dev is supposed to carry the
+    # dev surface; main is not, and the invariant is worth enforcing by machine
+    # rather than by whoever remembers to look.
+    if: github.base_ref == 'main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert the dev surface is absent
+        run: |
+          pattern='DevPanel|MockTransport|SimulatedTransport|NetworkConditions|isSimulatedTransport|legDelayMs|__ruyah|dropoutReport|recordDropoutEvent|debugInjectDrift|setNetwork'
+          if git grep -nE "$pattern" -- ':!docs' ':!.github'; then
+            echo
+            echo "::error::Dev-only code reached a branch bound for main."
+            echo "See docs/BRANCHING.md for what belongs on dev and how to strip it."
+            exit 1
+          fi
+          echo "Clean: no dev surface found."

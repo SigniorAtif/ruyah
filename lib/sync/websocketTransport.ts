@@ -16,10 +16,9 @@
 
 import { ClockSync } from './clock';
 import type {
-  NetworkConditions,
-  SimulatedTransport,
   SyncErrorCode,
   SyncMessage,
+  SyncTransport,
   TransportState,
 } from './types';
 
@@ -69,28 +68,13 @@ const FATAL_CLOSE_CODES = new Set([
   CLOSE_REPLACED,
 ]);
 
-/**
- * The real network already supplies latency, jitter and loss, so the simulator
- * starts inert. The dev panel can still add more on top — the delay is applied
- * to our own outbound sends, which is a genuine one-way delay, not a pretend
- * one — and `connected: false` closes the socket for real (§5).
- */
-const DEFAULT_NETWORK: NetworkConditions = {
-  latencyMs: 0,
-  jitterMs: 0,
-  dropRate: 0,
-  connected: true,
-};
-
 export interface WebSocketTransportOptions {
   /** Base relay URL, e.g. `ws://localhost:8080/ws` or `wss://host/ws`. */
   url: string;
-  network?: Partial<NetworkConditions>;
 }
 
-export class WebSocketTransport implements SimulatedTransport {
+export class WebSocketTransport implements SyncTransport {
   private readonly url: string;
-  private net: NetworkConditions;
 
   private socket: WebSocket | null = null;
   private roomId = '';
@@ -123,8 +107,6 @@ export class WebSocketTransport implements SimulatedTransport {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** In-flight simulated sends, so a disconnect doesn't leak them. */
-  private readonly pendingSends = new Set<ReturnType<typeof setTimeout>>();
 
   private readonly handlers = new Set<(msg: SyncMessage) => void>();
   private readonly stateHandlers = new Set<(state: TransportState) => void>();
@@ -143,7 +125,6 @@ export class WebSocketTransport implements SimulatedTransport {
 
   constructor(opts: WebSocketTransportOptions) {
     this.url = opts.url;
-    this.net = { ...DEFAULT_NETWORK, ...opts.network };
     this.clock = new ClockSync({
       // Authority is the server's to assign, and in server mode the clock does
       // not care either way — it is passed for completeness, not for timing.
@@ -185,7 +166,6 @@ export class WebSocketTransport implements SimulatedTransport {
     this.clock.stop();
     this.clearRetry();
     this.clearConnectTimer();
-    this.clearPendingSends();
     this.teardownSocket();
     this.setPeerPresent(false);
     this.peerIdValue = null;
@@ -194,7 +174,7 @@ export class WebSocketTransport implements SimulatedTransport {
   }
 
   private open(): void {
-    if (this.fatal || this.closedByUs || !this.net.connected) return;
+    if (this.fatal || this.closedByUs) return;
 
     const url = `${this.url}?room=${encodeURIComponent(
       this.roomId,
@@ -297,7 +277,7 @@ export class WebSocketTransport implements SimulatedTransport {
           'The relay accepted the connection but did not answer. Check that the address points at a ruyah relay.',
         );
       }
-      if (this.closedByUs || !this.net.connected) {
+      if (this.closedByUs) {
         this.resolveConnect();
         this.setState('disconnected');
         return;
@@ -325,7 +305,7 @@ export class WebSocketTransport implements SimulatedTransport {
 
   /** §5: exponential backoff, 500ms → 8s ceiling, with jitter. */
   private scheduleRetry(): void {
-    if (this.fatal || this.closedByUs || !this.net.connected) return;
+    if (this.fatal || this.closedByUs) return;
     this.clearRetry();
 
     const base = Math.min(
@@ -366,36 +346,13 @@ export class WebSocketTransport implements SimulatedTransport {
   send(msg: SyncMessage): void {
     // §5: never queue across a disconnect. If the socket is not open the
     // message is dropped, silently and on purpose.
-    if (!this.net.connected) return;
-    if (this.net.dropRate > 0 && Math.random() < this.net.dropRate) return;
-
-    if (this.net.latencyMs <= 0 && this.net.jitterMs <= 0) {
-      this.writeNow(msg);
-      return;
-    }
-
-    const jitter =
-      this.net.jitterMs > 0 ? (Math.random() * 2 - 1) * this.net.jitterMs : 0;
-    const delay = Math.max(0, this.net.latencyMs + jitter);
-    const timer = setTimeout(() => {
-      this.pendingSends.delete(timer);
-      // Re-check: the link may have gone while this was waiting, and a delayed
-      // send that lands after a reconnect would describe a world that is gone.
-      if (!this.net.connected) return;
-      this.writeNow(msg);
-    }, delay);
-    this.pendingSends.add(timer);
+    this.writeNow(msg);
   }
 
   private writeNow(msg: SyncMessage): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(msg));
-  }
-
-  private clearPendingSends(): void {
-    for (const t of this.pendingSends) clearTimeout(t);
-    this.pendingSends.clear();
   }
 
   // ---------------------------------------------------------------- receiving
@@ -572,53 +529,5 @@ export class WebSocketTransport implements SimulatedTransport {
 
   get peerId(): string | null {
     return this.peerIdValue;
-  }
-
-  get clockOffsetMs(): number {
-    return this.clock.offsetMs;
-  }
-
-  get hasClockEstimate(): boolean {
-    return this.clock.hasEstimate;
-  }
-
-  // ------------------------------------------------------------- simulation
-
-  getNetwork(): NetworkConditions {
-    return { ...this.net };
-  }
-
-  setNetwork(patch: Partial<NetworkConditions>): void {
-    const wasConnected = this.net.connected;
-    this.net = { ...this.net, ...patch };
-
-    if (wasConnected && !this.net.connected) {
-      this.pullCable();
-    } else if (!wasConnected && this.net.connected) {
-      this.restoreCable();
-    }
-  }
-
-  /**
-   * §5: the dev panel's drop toggle closes the socket for real. Simulating a
-   * dead link by dropping messages while the socket stays open would exercise
-   * the wrong half of §8 — the reconnect path is the part worth testing, and it
-   * only runs when the socket actually goes away.
-   */
-  private pullCable(): void {
-    this.clearRetry();
-    this.clearConnectTimer();
-    this.clearPendingSends();
-    this.clock.stop();
-    this.teardownSocket();
-    this.setPeerPresent(false);
-    this.setState('disconnected');
-  }
-
-  private restoreCable(): void {
-    if (this.closedByUs || this.fatal) return;
-    this.attempt = 0;
-    this.setState('reconnecting');
-    this.open();
   }
 }

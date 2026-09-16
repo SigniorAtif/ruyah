@@ -1,8 +1,7 @@
 /**
  * Wire + transport contract (spec §10).
  *
- * This file is the seam between Phase 1 (MockTransport, BroadcastChannel) and
- * Phase 2 (WebSocketTransport). Nothing here may know about video.
+ * The seam every transport implements. Nothing here may know about video.
  *
  * Time rule (spec §5): every timestamp in this file is epoch milliseconds.
  * No timezones, no Date parsing, no date libraries anywhere under lib/sync.
@@ -16,10 +15,19 @@ export type SyncMessage =
   // (§6.2), so `position` is reported for information, not to correct toward.
   | { type: 'pause'; position: number }
   | { type: 'seek'; position: number; executeAt: number; wasPlaying: boolean }
-  | { type: 'heartbeat'; position: number; playing: boolean; at: number }
+  // rttMs is this sender's own measured round trip, piggybacked so the peer can
+  // size its scheduling lead against the SLOWER of the two links rather than
+  // only its own (§6). Optional: a peer that does not send it is simply not
+  // counted, which is the pre-existing behaviour.
+  | { type: 'heartbeat'; position: number; playing: boolean; at: number; rttMs?: number }
   | { type: 'ready'; userId: string; fingerprint: string }
   | { type: 'ping'; t0: number }
-  | { type: 'pong'; t0: number; t1: number }
+  // Four-stamp NTP (§5.1). t1 is receipt and t2 is dispatch, both on the
+  // responder's clock; the gap between them is the responder's own processing
+  // time, which is pure asymmetry and has to be subtracted rather than split.
+  // t2 is optional so an older responder that only sends t1 still works — the
+  // estimate then degrades to the three-stamp form it always used.
+  | { type: 'pong'; t0: number; t1: number; t2?: number }
   | { type: 'chat'; userId: string; text: string; at: number }; // wire only, no UI in Phase 1
 
 /**
@@ -83,7 +91,6 @@ export interface SyncTransport {
    * a silent promotion is exactly what §3 forbids, and the engine gates all
    * correction on this flag.
    *
-   * MockTransport fixes authority at construction and never fires this.
    */
   onAuthorityChange(handler: (isAuthority: boolean) => void): () => void;
 
@@ -99,33 +106,4 @@ export interface SyncTransport {
   readonly rttStdDevMs: number; // drives the jitter deadband, §7.3
   readonly isAuthority: boolean;
   readonly state: TransportState;
-}
-
-/** Knobs the dev panel drives (spec §10). Not part of the production seam. */
-export interface NetworkConditions {
-  /** One-way delay applied to every outbound message, ms. */
-  latencyMs: number;
-  /** Uniform +/- jitter added to latencyMs, ms. Causes real packet reordering. */
-  jitterMs: number;
-  /** Probability [0,1] that an outbound message is silently lost. */
-  dropRate: number;
-  /** false = this client's link is down: nothing leaves and nothing arrives. */
-  connected: boolean;
-}
-
-/**
- * A transport that can lie about the network. Only MockTransport implements
- * this; the dev panel codes against it so no simulation types leak into
- * PlayerEngine.
- */
-export interface SimulatedTransport extends SyncTransport {
-  getNetwork(): NetworkConditions;
-  setNetwork(patch: Partial<NetworkConditions>): void;
-  /** Estimated offset from this client's clock to the authority's, ms. */
-  readonly clockOffsetMs: number;
-  readonly hasClockEstimate: boolean;
-}
-
-export function isSimulatedTransport(t: SyncTransport): t is SimulatedTransport {
-  return typeof (t as SimulatedTransport).setNetwork === 'function';
 }
