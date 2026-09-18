@@ -67,8 +67,7 @@ export function Lobby() {
   }, []);
 
   const urlCheck = validateRelayUrl(relayUrl, devMode);
-  const usingMock = relayUrl.trim() === '' && devMode;
-  const canConnect = usingMock || urlCheck.ok;
+  const canConnect = urlCheck.ok;
   const hasName = name.trim().length > 0;
 
   const begin = async (code: string, isAuthority: boolean) => {
@@ -255,14 +254,8 @@ export function Lobby() {
                 Both of you must use the same relay. It only forwards timestamps —
                 it never sees a frame of the film.
               </p>
-              {!urlCheck.ok && !usingMock && (
+              {!urlCheck.ok && (
                 <p className="mt-2 text-[12.5px] leading-[1.7] text-bad">{urlCheck.message}</p>
-              )}
-              {usingMock && (
-                <p className="mt-2 text-[12.5px] leading-[1.7] text-warn">
-                  Dev mode: empty, so this tab talks to other tabs in this browser
-                  over the mock transport. No relay is used.
-                </p>
               )}
               {relayUrl.trim() !== DEFAULT_RELAY_URL && (
                 <button

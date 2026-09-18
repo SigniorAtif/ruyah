@@ -18,14 +18,11 @@ function fractionAt(e: ReactPointerEvent<HTMLElement>): number {
 export function ControlBar({
   visible,
   containerRef,
-  onToggleDev,
   showKeysHint,
   onOpenKeys,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
-  /** Absent when there is no network simulation to show. */
-  onToggleDev?: () => void;
   showKeysHint: boolean;
   onOpenKeys: () => void;
 }) {
@@ -202,15 +199,6 @@ export function ControlBar({
                 className="kicker cursor-pointer border-0 bg-transparent p-0 tracking-[0.18em] transition-colors duration-300 hover:text-foreground"
               >
                 keys
-              </button>
-            )}
-            {onToggleDev && (
-              <button
-                type="button"
-                onClick={onToggleDev}
-                className="kicker cursor-pointer rounded border border-foreground/15 bg-transparent px-[11px] py-1.5 tracking-[0.18em] transition-colors duration-300 hover:border-foreground/40 hover:text-foreground"
-              >
-                dev
               </button>
             )}
             <button

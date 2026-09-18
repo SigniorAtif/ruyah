@@ -4,7 +4,6 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar } from './ControlBar';
-import { DevPanel } from './DevPanel';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
@@ -21,7 +20,6 @@ export function VideoPlayer({ code }: { code: string }) {
   const idleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
-  const [devOpen, setDevOpen] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
@@ -29,7 +27,6 @@ export function VideoPlayer({ code }: { code: string }) {
   const roomCode = useRuya((s) => s.roomCode);
   const ensureEngine = useRuya((s) => s.ensureEngine);
   const status = useRuya((s) => s.status);
-  const network = useRuya((s) => s.network);
   const fingerprint = useRuya((s) => s.fingerprint);
   const peerFingerprint = useRuya((s) => s.peerFingerprint);
   const setReady = useRuya((s) => s.setReady);
@@ -39,10 +36,7 @@ export function VideoPlayer({ code }: { code: string }) {
 
   useKeyboardShortcuts(containerRef, {
     onToggleKeys: () => setKeysOpen((v) => !v),
-    onEscape: () => {
-      setKeysOpen(false);
-      setDevOpen(false);
-    },
+    onEscape: () => setKeysOpen(false),
   });
 
   // A hard load of /room/CODE has no File — it cannot survive a URL — so send
@@ -83,7 +77,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const mediaError = status?.mediaError ?? null;
   const blocked = connectionDown || !!mediaError;
   // Nobody wants the bar to vanish from under an open panel, or while paused.
-  const barVisible = controlsVisible || devOpen || keysOpen || blocked || !status?.playing;
+  const barVisible = controlsVisible || keysOpen || blocked || !status?.playing;
 
   const chooseAnotherFile = () => {
     // Back to the room screen, file picker first. Un-readying keeps the room
@@ -143,8 +137,6 @@ export function VideoPlayer({ code }: { code: string }) {
 
       <Toast barVisible={barVisible} />
 
-      {devOpen && <DevPanel onClose={() => setDevOpen(false)} />}
-
       {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 
       {mediaError ? (
@@ -157,16 +149,12 @@ export function VideoPlayer({ code }: { code: string }) {
           onLeave={leave}
         />
       ) : (
-        <ConnectionOverlay
-          onLeave={leave}
-          onOpenDev={network && !devOpen ? () => setDevOpen(true) : undefined}
-        />
+        <ConnectionOverlay onLeave={leave} />
       )}
 
       <ControlBar
         visible={barVisible}
         containerRef={containerRef}
-        onToggleDev={network ? () => setDevOpen((v) => !v) : undefined}
         showKeysHint={showKeysHint}
         onOpenKeys={() => setKeysOpen(true)}
       />
