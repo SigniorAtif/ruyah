@@ -185,6 +185,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['J · L', 'seek ±10s'],
   ['↑ ↓', 'volume ±5%'],
   ['M', 'mute'],
+  ['S', 'subtitles on / off'],
   ['F', 'fullscreen'],
   ['0 – 9', 'jump to 0–90%'],
   ['?', 'this sheet'],
