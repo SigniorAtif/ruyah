@@ -409,12 +409,8 @@ function Room({ onEnter }: { onEnter: () => void }) {
       <section className="flex flex-col justify-between gap-12 border-line px-[clamp(16px,5vw,66px)] py-[clamp(40px,6vw,80px)] min-[720px]:border-r">
         <div>
           <div className="mb-5 flex flex-wrap items-center gap-3.5">
-            <span
-              className={`font-mono text-[10px] uppercase tracking-[0.22em] transition-colors duration-400 ${
-                copied ? 'text-gold-hi' : 'text-kicker'
-              }`}
-            >
-              {copied ? 'copied' : 'room code'}
+            <span className="font-mono text-[10px] uppercase tracking-[0.22em] text-kicker">
+              room code
             </span>
             <span className="rounded-sm border border-gold/50 px-2 py-[3px] font-mono text-[9px] uppercase tracking-[0.16em] text-gold-hi">
               {isAuthority ? 'hosting' : 'joined · following the host'}
