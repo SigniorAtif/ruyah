@@ -65,6 +65,7 @@ export function useKeyboardShortcuts(
 ) {
   // Held in a ref so a new closure each render does not re-bind the listener.
   const handlersRef = useRef(handlers);
+  const lastTextTrack = useRef(-1);
   useEffect(() => {
     handlersRef.current = handlers;
   });
@@ -148,6 +149,27 @@ export function useKeyboardShortcuts(
           const next = !status.muted;
           engine.setMuted(next);
           showToast(next ? 'Muted' : `Volume ${Math.round(status.volume * 100)}%`);
+          return;
+        }
+
+        case 's':
+        case 'S': {
+          // Off goes back to whichever track was last on, or the first one.
+          if (status.activeTextTrack >= 0) {
+            lastTextTrack.current = status.activeTextTrack;
+            engine.setTextTrack(-1);
+            showToast('Subtitles off');
+            return;
+          }
+          const tracks = status.textTracks;
+          const next =
+            tracks.find((t) => t.index === lastTextTrack.current) ?? tracks[0];
+          if (!next) {
+            showToast('No subtitles loaded');
+            return;
+          }
+          engine.setTextTrack(next.index);
+          showToast(`Subtitles · ${next.label || next.language || 'on'}`);
           return;
         }
 

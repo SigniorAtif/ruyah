@@ -21,6 +21,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  const [tracksOpen, setTracksOpen] = useState(false);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -36,7 +37,10 @@ export function VideoPlayer({ code }: { code: string }) {
 
   useKeyboardShortcuts(containerRef, {
     onToggleKeys: () => setKeysOpen((v) => !v),
-    onEscape: () => setKeysOpen(false),
+    onEscape: () => {
+      setKeysOpen(false);
+      setTracksOpen(false);
+    },
   });
 
   // A hard load of /room/CODE has no File — it cannot survive a URL — so send
@@ -51,7 +55,11 @@ export function VideoPlayer({ code }: { code: string }) {
     if (!video || !objectUrl) return;
     const engine = ensureEngine();
     if (!engine) return;
-    return engine.attach(video);
+    const detach = engine.attach(video);
+    // Plays the preferred audio language where the browser cannot switch itself.
+    const file = useRuya.getState().file;
+    if (file) engine.useAudioFrom(file, (label) => useRuya.getState().showToast(`Audio · ${label}`));
+    return detach;
   }, [objectUrl, ensureEngine]);
 
   const wake = useCallback(() => {
@@ -77,7 +85,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const mediaError = status?.mediaError ?? null;
   const blocked = connectionDown || !!mediaError;
   // Nobody wants the bar to vanish from under an open panel, or while paused.
-  const barVisible = controlsVisible || keysOpen || blocked || !status?.playing;
+  const barVisible = controlsVisible || keysOpen || tracksOpen || blocked || !status?.playing;
 
   const chooseAnotherFile = () => {
     // Back to the room screen, file picker first. Un-readying keeps the room
@@ -101,6 +109,11 @@ export function VideoPlayer({ code }: { code: string }) {
         src={objectUrl}
         onClick={() => {
           wake();
+          // A click on the frame first dismisses an open panel, like Escape.
+          if (tracksOpen) {
+            setTracksOpen(false);
+            return;
+          }
           getEngine()?.togglePlay();
         }}
         className="absolute inset-0 h-full w-full object-contain transition-[filter] duration-700"
@@ -157,6 +170,8 @@ export function VideoPlayer({ code }: { code: string }) {
         containerRef={containerRef}
         showKeysHint={showKeysHint}
         onOpenKeys={() => setKeysOpen(true)}
+        tracksOpen={tracksOpen}
+        onToggleTracks={() => setTracksOpen((v) => !v)}
       />
 
       <Beat />
@@ -170,6 +185,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['J · L', 'seek ±10s'],
   ['↑ ↓', 'volume ±5%'],
   ['M', 'mute'],
+  ['S', 'subtitles on / off'],
   ['F', 'fullscreen'],
   ['0 – 9', 'jump to 0–90%'],
   ['?', 'this sheet'],

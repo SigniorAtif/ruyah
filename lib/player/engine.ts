@@ -12,6 +12,9 @@
  */
 
 import type { SyncMessage, SyncTransport, TransportState } from '@/lib/sync/types';
+import { AudioTrackController, nativeAudioSwitching } from './audioTracks';
+import { primaryLanguage } from './probe';
+import { readSubtitleFile, subtitleLabel } from './subtitles';
 
 /**
  * Lead for a scheduled seek. Must comfortably exceed one-way latency (§6).
@@ -117,6 +120,31 @@ export type ConnectionHealth =
   | 'self-lost'
   | 'reconnecting';
 
+/** A subtitle or audio track, as the pickers show it. */
+export interface MediaTrack {
+  /** Index into the element's own track list. */
+  index: number;
+  label: string;
+  language: string;
+}
+
+/**
+ * AudioTrackList is real in Safari and behind a flag in Chromium, and missing
+ * from TypeScript's DOM lib either way. Only what is used here is declared.
+ */
+interface AudioTrackLike {
+  label: string;
+  language: string;
+  enabled: boolean;
+}
+interface AudioTrackListLike extends EventTarget {
+  readonly length: number;
+  [index: number]: AudioTrackLike;
+}
+function audioTracksOf(v: HTMLVideoElement | null): AudioTrackListLike | null {
+  return (v as unknown as { audioTracks?: AudioTrackListLike } | null)?.audioTracks ?? null;
+}
+
 export interface EngineStatus {
   position: number;
   duration: number;
@@ -152,6 +180,20 @@ export interface EngineStatus {
   isAuthority: boolean;
   manualOffsetSec: number;
   mediaError: string | null;
+
+  /**
+   * Subtitles and audio are local, like volume: each person reads and hears
+   * their own choice, and nothing here reaches the transport.
+   */
+  textTracks: MediaTrack[];
+  /** Index of the showing text track, or -1 for off. */
+  activeTextTrack: number;
+  /** Empty until the file has been read, or when it cannot be. */
+  audioTracks: MediaTrack[];
+  activeAudioTrack: number;
+  /** A track being pulled out of the file (Chromium only), 0..1. */
+  audioPreparing: { index: number; progress: number } | null;
+  audioError: string | null;
 }
 
 interface PeerHeartbeat {
@@ -241,6 +283,11 @@ export class PlayerEngine {
   private mediaError: string | null = null;
   private manualOffsetSec: number;
   private destroyed = false;
+  /** <track> elements added from picked subtitle files, and their blob URLs. */
+  private addedTracks: Array<{ el: HTMLTrackElement; url: string }> = [];
+  /** Chromium's audio-language switching; null where the browser does it natively. */
+  private audioChoice: AudioTrackController | null = null;
+  private onAudioSwitched: ((label: string) => void) | null = null;
 
   constructor(opts: PlayerEngineOptions) {
     this.transport = opts.transport;
@@ -290,6 +337,22 @@ export class PlayerEngine {
       on('canplay', () => this.onResumedFromStall()),
     ];
 
+    // Track lists are live and change as metadata arrives or a file is added.
+    const tracks: Array<EventTarget | null> = [video.textTracks, audioTracksOf(video)];
+    const onTracks = () => this.notify();
+    for (const list of tracks) {
+      list?.addEventListener('addtrack', onTracks);
+      list?.addEventListener('removetrack', onTracks);
+      list?.addEventListener('change', onTracks);
+    }
+    offs.push(() => {
+      for (const list of tracks) {
+        list?.removeEventListener('addtrack', onTracks);
+        list?.removeEventListener('removetrack', onTracks);
+        list?.removeEventListener('change', onTracks);
+      }
+    });
+
     this.startHeartbeat();
     this.startDropoutWatch();
 
@@ -323,6 +386,13 @@ export class PlayerEngine {
       if (this.stallTimer !== null) clearTimeout(this.stallTimer);
       this.stallTimer = null;
       this.clearPendingSeek();
+      for (const { el, url } of this.addedTracks) {
+        el.remove();
+        URL.revokeObjectURL(url);
+      }
+      this.addedTracks = [];
+      this.audioChoice?.dispose();
+      this.audioChoice = null;
       this.video = null;
     };
 
@@ -364,7 +434,9 @@ export class PlayerEngine {
       buffering: this.buffering,
       playbackRate: v?.playbackRate ?? 1,
       volume: v?.volume ?? 1,
-      muted: v?.muted ?? false,
+      // While extracted audio plays, the <video> is forced silent and the
+      // person's own mute lives on the controller.
+      muted: this.audioChoice?.external ? this.audioChoice.muted : (v?.muted ?? false),
 
       driftMs: this.driftMs,
       deadbandMs: this.deadbandS * 1000,
@@ -385,6 +457,59 @@ export class PlayerEngine {
       isAuthority: this.transport.isAuthority,
       manualOffsetSec: this.manualOffsetSec,
       mediaError: this.mediaError,
+
+      ...this.trackStatus(v),
+    };
+  }
+
+  private trackStatus(
+    v: HTMLVideoElement | null,
+  ): Pick<
+    EngineStatus,
+    | 'textTracks'
+    | 'activeTextTrack'
+    | 'audioTracks'
+    | 'activeAudioTrack'
+    | 'audioPreparing'
+    | 'audioError'
+  > {
+    const textTracks: MediaTrack[] = [];
+    let activeTextTrack = -1;
+    if (v) {
+      for (let i = 0; i < v.textTracks.length; i++) {
+        const t = v.textTracks[i];
+        if (t.kind !== 'subtitles' && t.kind !== 'captions') continue;
+        textTracks.push({ index: i, label: t.label, language: t.language });
+        if (t.mode === 'showing') activeTextTrack = i;
+      }
+    }
+
+    const audioTracks: MediaTrack[] = [];
+    let activeAudioTrack = -1;
+    let audioPreparing: EngineStatus['audioPreparing'] = null;
+    let audioError: string | null = null;
+    const audio = audioTracksOf(v);
+    if (this.audioChoice) {
+      const c = this.audioChoice.status();
+      for (const t of c.tracks) {
+        audioTracks.push({ index: t.index, label: t.name, language: primaryLanguage(t.language) });
+      }
+      activeAudioTrack = c.active;
+      audioPreparing = c.preparing;
+      audioError = c.error;
+    } else if (audio) {
+      for (let i = 0; i < audio.length; i++) {
+        audioTracks.push({ index: i, label: audio[i].label, language: audio[i].language });
+        if (audio[i].enabled) activeAudioTrack = i;
+      }
+    }
+    return {
+      textTracks,
+      activeTextTrack,
+      audioTracks,
+      activeAudioTrack,
+      audioPreparing,
+      audioError,
     };
   }
 
@@ -543,14 +668,82 @@ export class PlayerEngine {
   setVolume(volume: number): void {
     if (!this.video) return;
     this.video.volume = Math.min(1, Math.max(0, volume));
-    this.video.muted = this.video.volume === 0;
-    this.notify();
+    this.setMuted(this.video.volume === 0);
   }
 
   setMuted(muted: boolean): void {
     if (!this.video) return;
-    this.video.muted = muted;
+    if (this.audioChoice?.external) this.audioChoice.setMuted(muted);
+    else this.video.muted = muted;
+    this.audioChoice?.applyOutput();
     this.notify();
+  }
+
+  /** Show one subtitle track, or none with -1. Local only, like volume. */
+  setTextTrack(index: number): void {
+    const v = this.video;
+    if (!v) return;
+    for (let i = 0; i < v.textTracks.length; i++) {
+      const t = v.textTracks[i];
+      if (t.kind !== 'subtitles' && t.kind !== 'captions') continue;
+      // 'disabled' rather than 'hidden': a hidden track still parses and fires cues.
+      t.mode = i === index ? 'showing' : 'disabled';
+    }
+    this.notify();
+  }
+
+  /**
+   * Switch the audio track. Only one may be enabled; flipping them on a
+   * playing element can hiccup for a frame, which the drift ladder absorbs.
+   */
+  setAudioTrack(index: number): void {
+    if (this.audioChoice) {
+      void this.audioChoice.select(index);
+      return;
+    }
+    const audio = audioTracksOf(this.video);
+    if (!audio || index < 0 || index >= audio.length) return;
+    for (let i = 0; i < audio.length; i++) audio[i].enabled = i === index;
+    this.notify();
+  }
+
+  /**
+   * Read the file's audio tracks and play the preferred language. Where the
+   * browser switches tracks itself (Safari) this does nothing: the native list
+   * is already in the status. `onSwitched` hears each completed switch.
+   */
+  useAudioFrom(file: File, onSwitched: (label: string) => void): void {
+    const v = this.video;
+    if (!v || nativeAudioSwitching()) return;
+    this.onAudioSwitched = onSwitched;
+    this.audioChoice?.dispose();
+    this.audioChoice = new AudioTrackController(
+      v,
+      file,
+      () => this.notify(),
+      (label) => this.onAudioSwitched?.(label),
+    );
+  }
+
+  /**
+   * Add a picked .srt/.vtt as a new subtitle track and show it. Resolves to
+   * the track's label; rejects with a readable message for a file it can't use.
+   */
+  async addSubtitleFile(file: File): Promise<string> {
+    const vtt = await readSubtitleFile(file);
+    const v = this.video;
+    if (!v) throw new Error('The player is not ready yet.');
+    const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
+    const el = document.createElement('track');
+    el.kind = 'subtitles';
+    el.label = subtitleLabel(file);
+    el.src = url;
+    v.appendChild(el);
+    this.addedTracks.push({ el, url });
+    // The new TextTrack is the element's; find its index to make it the one shown.
+    const index = Array.prototype.indexOf.call(v.textTracks, el.track);
+    this.setTextTrack(index);
+    return el.label;
   }
 
   /** §11 — constant applied inside the drift math, not a seek. */
