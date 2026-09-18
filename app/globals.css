@@ -70,6 +70,14 @@ input::placeholder {
   background: rgba(182, 130, 53, 0.32);
 }
 
+/* Subtitles in the house face, legible over any frame without a slab behind them. */
+video::cue {
+  font-family: var(--font-lora), Georgia, serif;
+  color: var(--foreground);
+  background: rgba(11, 11, 10, 0.55);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
 /* The small mono label that heads every field and panel. */
 @utility kicker {
   font-family: var(--font-courier), ui-monospace, monospace;
