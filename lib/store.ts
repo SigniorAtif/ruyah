@@ -13,6 +13,7 @@
 import { create } from 'zustand';
 import { WebSocketTransport } from './sync/websocketTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
+import { prefetchPreferredAudio, releaseFile } from '@/lib/player/audioTracks';
 import { fingerprintFile } from './player/fingerprint';
 import type {
   SyncErrorCode,
@@ -86,6 +87,22 @@ export function nameOf(userId: string | null): string {
   return name && name.length > 0 ? name : 'your partner';
 }
 
+/** What the chat input allows, and what an incoming line is cut to. */
+export const CHAT_MAX_CHARS = 180;
+/** Older lines fall off; this is an aside, not a transcript. */
+const CHAT_KEEP = 200;
+/** How long a line shows over the film in fullscreen, where the aside is hidden. */
+const CHAT_TOAST_MS = 5_400;
+let chatSeq = 0;
+
+export interface ChatMessage {
+  id: number;
+  mine: boolean;
+  text: string;
+  /** Sender's film time when it was said, or null from a peer that did not send one. */
+  position: number | null;
+}
+
 /** Transient on-screen feedback; the control bar is usually hidden. */
 const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -127,6 +144,24 @@ interface RuyaState {
   status: EngineStatus | null;
   toast: { id: number; text: string } | null;
 
+  // --- chat
+  messages: ChatMessage[];
+  chatOpen: boolean;
+  /** Lines that arrived while the aside was collapsed or the film fullscreen. */
+  unread: number;
+  /** Lines floated over the film while the aside is collapsed or fullscreen hides it. */
+  chatToasts: ChatMessage[];
+  /**
+   * A clicked toast is on its way into the aside: the toasts stay put until
+   * the aside has opened, so there is something to fly from.
+   */
+  chatHandoffPending: boolean;
+  /**
+   * Lines that arrived by flying in from a toast. They keep a separate key
+   * from then on, so they are not remounted and re-animated later.
+   */
+  chatLanded: number[];
+
   /**
    * Why the last attempt to join failed. A toast is not enough for these: the
    * person has to read the reason, fix the address, and try again, which means
@@ -147,13 +182,23 @@ interface RuyaState {
   /** §8 — re-open a transport that has given up. See the action for why. */
   reconnect(): Promise<void>;
   showToast(text: string): void;
+  sendChat(text: string): void;
+  setChatOpen(open: boolean): void;
   leave(): void;
 }
 
 /** Everything in the store that is session state rather than an action. */
 type SessionData = Omit<
   RuyaState,
-  'startSession' | 'setFile' | 'setReady' | 'ensureEngine' | 'showToast' | 'reconnect' | 'leave'
+  | 'startSession'
+  | 'setFile'
+  | 'setReady'
+  | 'ensureEngine'
+  | 'showToast'
+  | 'sendChat'
+  | 'setChatOpen'
+  | 'reconnect'
+  | 'leave'
 >;
 
 /**
@@ -187,8 +232,42 @@ const EMPTY_SESSION: SessionData = {
 
   status: null,
   toast: null,
+
+  messages: [],
+  chatOpen: true,
+  unread: 0,
+  chatToasts: [],
+  chatHandoffPending: false,
+  chatLanded: [],
+
   sessionError: null,
 };
+
+/**
+ * Adds a line to the aside. If the aside is collapsed, or fullscreen has
+ * hidden it, the line also counts as unread and floats over the film.
+ */
+function pushChat(
+  set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
+  msg: ChatMessage,
+): void {
+  const fullscreen = typeof document !== 'undefined' && !!document.fullscreenElement;
+  set((s) => {
+    const hidden = !msg.mine && (!s.chatOpen || fullscreen);
+    return {
+      messages: [...s.messages, msg].slice(-CHAT_KEEP),
+      unread: hidden ? s.unread + 1 : s.unread,
+      chatToasts: hidden ? [...s.chatToasts, msg].slice(-3) : s.chatToasts,
+    };
+  });
+  // Harmless when it was never shown: the filter finds nothing.
+  if (!msg.mine) {
+    setTimeout(
+      () => set((s) => ({ chatToasts: s.chatToasts.filter((t) => t.id !== msg.id) })),
+      CHAT_TOAST_MS,
+    );
+  }
+}
 
 export const useRuya = create<RuyaState>((set, get) => ({
   ...EMPTY_SESSION,
@@ -217,6 +296,21 @@ export const useRuya = create<RuyaState>((set, get) => ({
     const t: SyncTransport = new WebSocketTransport({ url: trimmed });
     transport = t;
 
+    unsubscribers.push(
+      t.on((msg: SyncMessage) => {
+        if (msg.type !== 'chat') return;
+        // Relayed verbatim, so nothing upstream has checked the shape.
+        if (typeof msg.text !== 'string') return;
+        const text = msg.text.trim().slice(0, CHAT_MAX_CHARS);
+        if (!text) return;
+        pushChat(set, {
+          id: ++chatSeq,
+          mine: false,
+          text,
+          position: Number.isFinite(msg.position) ? (msg.position as number) : null,
+        });
+      }),
+    );
     unsubscribers.push(
       t.on((msg: SyncMessage) => {
         if (msg.type !== 'ready') return;
@@ -294,6 +388,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
   },
 
   async setFile(file) {
+    const previousFile = get().file;
+    if (previousFile && previousFile !== file) releaseFile(previousFile);
     const previous = get().objectUrl;
     // §12: revoke or the file's memory mapping leaks.
     if (previous) URL.revokeObjectURL(previous);
@@ -339,6 +435,9 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
     probe.src = objectUrl;
     await meta;
+    // Start pulling out the preferred audio language now, while the room waits,
+    // so it is usually ready by the time the film starts.
+    if (!get().fileError) void prefetchPreferredAudio(file, get().duration);
 
     try {
       const fingerprint = await fingerprintFile(file);
@@ -375,6 +474,30 @@ export const useRuya = create<RuyaState>((set, get) => ({
     }, TOAST_MS);
   },
 
+  sendChat(raw) {
+    const text = raw.trim().slice(0, CHAT_MAX_CHARS);
+    if (!text || !transport) return;
+    const position = engine?.getStatus().position ?? 0;
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text,
+      at: transport.syncedNow(),
+      position,
+    });
+    pushChat(set, { id: ++chatSeq, mine: true, text, position });
+  },
+
+  setChatOpen(open) {
+    // Opening the aside shows every line, so the floating copies go.
+    set((s) => ({
+      chatOpen: open,
+      unread: open ? 0 : s.unread,
+      chatToasts:
+        open && !document.fullscreenElement && !s.chatHandoffPending ? [] : s.chatToasts,
+    }));
+  },
+
   /**
    * Ask the transport to connect again after it has stopped trying.
    *
@@ -401,6 +524,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     transport = null;
     const url = get().objectUrl;
     if (url) URL.revokeObjectURL(url);
+    const file = get().file;
+    if (file) releaseFile(file);
     if (toastTimer !== null) clearTimeout(toastTimer);
     toastTimer = null;
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
