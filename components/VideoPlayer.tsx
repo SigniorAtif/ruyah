@@ -1,13 +1,15 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar } from './ControlBar';
+import { DevPanel, OffsetPanel } from './PlayerPanels';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
+import { getDevServerSnapshot, getDevSnapshot, subscribeConfig } from '@/lib/relayConfig';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
 
 const CONTROLS_IDLE_MS = 3_000;
@@ -23,6 +25,9 @@ export function VideoPlayer({ code }: { code: string }) {
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
   const [tracksOpen, setTracksOpen] = useState(false);
+  const [offsetOpen, setOffsetOpen] = useState(false);
+  const [devOpen, setDevOpen] = useState(false);
+  const devMode = useSyncExternalStore(subscribeConfig, getDevSnapshot, getDevServerSnapshot);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -42,6 +47,8 @@ export function VideoPlayer({ code }: { code: string }) {
     onEscape: () => {
       setKeysOpen(false);
       setTracksOpen(false);
+      setOffsetOpen(false);
+      setDevOpen(false);
     },
     onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
@@ -88,7 +95,8 @@ export function VideoPlayer({ code }: { code: string }) {
   const mediaError = status?.mediaError ?? null;
   const blocked = connectionDown || !!mediaError;
   // Nobody wants the bar to vanish from under an open panel, or while paused.
-  const barVisible = controlsVisible || keysOpen || tracksOpen || blocked || !status?.playing;
+  const panelOpen = tracksOpen || offsetOpen || devOpen;
+  const barVisible = controlsVisible || keysOpen || panelOpen || blocked || !status?.playing;
 
   const chooseAnotherFile = () => {
     // Back to the room screen, file picker first. Un-readying keeps the room
@@ -116,8 +124,10 @@ export function VideoPlayer({ code }: { code: string }) {
           onClick={() => {
             wake();
             // A click on the frame first dismisses an open panel, like Escape.
-            if (tracksOpen) {
+            if (panelOpen) {
               setTracksOpen(false);
+              setOffsetOpen(false);
+              setDevOpen(false);
               return;
             }
             getEngine()?.togglePlay();
@@ -141,8 +151,9 @@ export function VideoPlayer({ code }: { code: string }) {
               ⚠
             </span>
             <p className="max-w-[820px] flex-1 text-[13.5px] leading-[1.55] text-warn">
-              You are watching different encodes. Timestamps may not line up, so
-              the same moment can land at different points in each copy.
+              You are watching different encodes. If one copy has an extra intro,
+              set a manual offset instead of seeking — the offset control is in
+              the bar below.
             </p>
             <button
               type="button"
@@ -155,6 +166,9 @@ export function VideoPlayer({ code }: { code: string }) {
         )}
 
         <Toast barVisible={barVisible} />
+
+        {offsetOpen && <OffsetPanel />}
+        {devOpen && devMode && <DevPanel />}
 
         {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 
@@ -177,7 +191,23 @@ export function VideoPlayer({ code }: { code: string }) {
           showKeysHint={showKeysHint}
           onOpenKeys={() => setKeysOpen(true)}
           tracksOpen={tracksOpen}
-          onToggleTracks={() => setTracksOpen((v) => !v)}
+          onToggleTracks={() => {
+            setTracksOpen((v) => !v);
+            setOffsetOpen(false);
+            setDevOpen(false);
+          }}
+          offsetOpen={offsetOpen}
+          onToggleOffset={() => {
+            setOffsetOpen((v) => !v);
+            setTracksOpen(false);
+            setDevOpen(false);
+          }}
+          showDev={devMode}
+          onToggleDev={() => {
+            setDevOpen((v) => !v);
+            setTracksOpen(false);
+            setOffsetOpen(false);
+          }}
         />
 
         <ChatToasts barVisible={barVisible} />

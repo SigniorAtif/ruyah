@@ -5,6 +5,7 @@ import type { MediaTrack } from '@/lib/player/engine';
 import { formatClock } from '@/lib/player/fingerprint';
 import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
 import { getEngine, useRuya } from '@/lib/store';
+import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
 /** Fraction of an element's width under the pointer, clamped to 0..1. */
 function fractionAt(e: ReactPointerEvent<HTMLElement>): number {
@@ -24,6 +25,10 @@ export function ControlBar({
   onOpenKeys,
   tracksOpen,
   onToggleTracks,
+  offsetOpen,
+  onToggleOffset,
+  showDev,
+  onToggleDev,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
@@ -31,12 +36,17 @@ export function ControlBar({
   onOpenKeys: () => void;
   tracksOpen: boolean;
   onToggleTracks: () => void;
+  offsetOpen: boolean;
+  onToggleOffset: () => void;
+  showDev: boolean;
+  onToggleDev: () => void;
 }) {
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
   const chatOpen = useRuya((s) => s.chatOpen);
   const unread = useRuya((s) => s.unread);
   const setChatOpen = useRuya((s) => s.setChatOpen);
+  const offset = useDisplayOffset();
   const [scrub, setScrub] = useState<number | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const dragging = useRef(false);
@@ -239,6 +249,27 @@ export function ControlBar({
                   {unread}
                 </span>
               )}
+            </button>
+            {showDev && (
+              <button
+                type="button"
+                onClick={onToggleDev}
+                className="cursor-pointer rounded border border-foreground/15 bg-transparent px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-faint transition-colors duration-300 hover:border-foreground/40 hover:text-foreground"
+              >
+                dev
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onToggleOffset}
+              aria-expanded={offsetOpen}
+              className={`cursor-pointer rounded border px-[13px] py-[7px] font-mono text-[10.5px] uppercase tracking-[0.16em] transition-colors duration-[350ms] hover:border-gold hover:text-gold-hi ${
+                offset === 0
+                  ? 'border-line-strong bg-transparent text-foreground'
+                  : 'border-gold bg-gold/15 text-gold-hi'
+              }`}
+            >
+              {offset === 0 ? 'offset' : `offset ${formatOffset(offset)}`}
             </button>
             <button
               type="button"
