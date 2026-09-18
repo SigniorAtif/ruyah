@@ -27,8 +27,6 @@ export function ControlBar({
   onToggleTracks,
   offsetOpen,
   onToggleOffset,
-  showDev,
-  onToggleDev,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
@@ -38,8 +36,6 @@ export function ControlBar({
   onToggleTracks: () => void;
   offsetOpen: boolean;
   onToggleOffset: () => void;
-  showDev: boolean;
-  onToggleDev: () => void;
 }) {
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
@@ -250,15 +246,6 @@ export function ControlBar({
                 </span>
               )}
             </button>
-            {showDev && (
-              <button
-                type="button"
-                onClick={onToggleDev}
-                className="cursor-pointer rounded border border-foreground/15 bg-transparent px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-faint transition-colors duration-300 hover:border-foreground/40 hover:text-foreground"
-              >
-                dev
-              </button>
-            )}
             <button
               type="button"
               onClick={onToggleOffset}

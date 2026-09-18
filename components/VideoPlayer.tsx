@@ -1,15 +1,14 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar } from './ControlBar';
-import { DevPanel, OffsetPanel } from './PlayerPanels';
+import { OffsetPanel } from './PlayerPanels';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
-import { getDevServerSnapshot, getDevSnapshot, subscribeConfig } from '@/lib/relayConfig';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
 
 const CONTROLS_IDLE_MS = 3_000;
@@ -26,8 +25,6 @@ export function VideoPlayer({ code }: { code: string }) {
   const [keysOpen, setKeysOpen] = useState(false);
   const [tracksOpen, setTracksOpen] = useState(false);
   const [offsetOpen, setOffsetOpen] = useState(false);
-  const [devOpen, setDevOpen] = useState(false);
-  const devMode = useSyncExternalStore(subscribeConfig, getDevSnapshot, getDevServerSnapshot);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -48,7 +45,6 @@ export function VideoPlayer({ code }: { code: string }) {
       setKeysOpen(false);
       setTracksOpen(false);
       setOffsetOpen(false);
-      setDevOpen(false);
     },
     onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
@@ -95,7 +91,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const mediaError = status?.mediaError ?? null;
   const blocked = connectionDown || !!mediaError;
   // Nobody wants the bar to vanish from under an open panel, or while paused.
-  const panelOpen = tracksOpen || offsetOpen || devOpen;
+  const panelOpen = tracksOpen || offsetOpen;
   const barVisible = controlsVisible || keysOpen || panelOpen || blocked || !status?.playing;
 
   const chooseAnotherFile = () => {
@@ -127,7 +123,6 @@ export function VideoPlayer({ code }: { code: string }) {
             if (panelOpen) {
               setTracksOpen(false);
               setOffsetOpen(false);
-              setDevOpen(false);
               return;
             }
             getEngine()?.togglePlay();
@@ -168,7 +163,6 @@ export function VideoPlayer({ code }: { code: string }) {
         <Toast barVisible={barVisible} />
 
         {offsetOpen && <OffsetPanel />}
-        {devOpen && devMode && <DevPanel />}
 
         {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 
@@ -194,19 +188,11 @@ export function VideoPlayer({ code }: { code: string }) {
           onToggleTracks={() => {
             setTracksOpen((v) => !v);
             setOffsetOpen(false);
-            setDevOpen(false);
           }}
           offsetOpen={offsetOpen}
           onToggleOffset={() => {
             setOffsetOpen((v) => !v);
             setTracksOpen(false);
-            setDevOpen(false);
-          }}
-          showDev={devMode}
-          onToggleDev={() => {
-            setDevOpen((v) => !v);
-            setTracksOpen(false);
-            setOffsetOpen(false);
           }}
         />
 
