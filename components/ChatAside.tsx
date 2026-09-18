@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'motion/react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
 import { CHAT_MAX_CHARS, nameOf, useRuya } from '@/lib/store';
 
@@ -71,14 +72,16 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   const me = useRuya((s) => s.displayName);
   const peerUserId = useRuya((s) => s.peerUserId);
   const messages = useRuya((s) => s.messages);
+  const landed = useRuya((s) => s.chatLanded);
   const position = useRuya((s) => s.status?.position ?? 0);
   const sendChat = useRuya((s) => s.sendChat);
   const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
   const them = nameOf(peerUserId);
 
-  // Keep the newest line in view as they arrive.
-  useEffect(() => {
+  // Keep the newest line in view as they arrive. A layout effect, so the list
+  // is already scrolled when Motion measures where a flying toast should land.
+  useLayoutEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages.length]);
@@ -91,8 +94,14 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   };
 
   return (
-    <div className="flex h-full w-full flex-col sm:w-[348px] [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
-      <div className="flex-none border-b border-line px-[22px] pb-4 pt-[22px]">
+    // Pinned to the aside's right edge at full width, so the aside's width
+    // transition reveals it rather than moving it. Every line is already where
+    // it will end up the moment it mounts, which is what lets a toast fly to
+    // it while the aside is still opening. For the same reason only the header
+    // and composer slide in: a transform on anything around the log would
+    // throw off where Motion thinks a line is.
+    <div className="absolute inset-y-0 right-0 flex w-full flex-col sm:w-[348px]">
+      <div className="flex-none border-b border-line px-[22px] pb-4 pt-[22px] [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
         <div className="flex items-baseline justify-between gap-3.5">
           <div className="min-w-0">
             <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.22em] text-kicker">
@@ -125,8 +134,11 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
         <div className="mt-3.5 h-px w-[38px] bg-gold" />
       </div>
 
-      <div
+      {/* layoutScroll: a line flying in from a toast is measured inside this
+          scroller, so its scroll offset has to be accounted for. */}
+      <motion.div
         ref={listRef}
+        layoutScroll
         role="log"
         aria-live="polite"
         className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto px-[22px] py-5"
@@ -136,27 +148,53 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
             Nothing said yet. Whatever you type is stamped with the moment in the film.
           </p>
         )}
-        {messages.map((m) => (
-          <div
-            key={m.id}
-            className={`max-w-[88%] rounded border px-[13px] py-2.5 [animation:ry-bubble_.45s_cubic-bezier(.2,.8,.2,1)_both] ${
-              m.mine
-                ? 'self-end border-foreground/15'
-                : 'self-start border-gold/30 border-l-2 border-l-gold/75'
-            }`}
-          >
-            <div className="mb-[7px] flex justify-between gap-3.5 font-mono text-[9px] uppercase tracking-[0.17em]">
-              <span className={m.mine ? 'text-muted' : 'text-gold-hi'}>{m.mine ? 'you' : them}</span>
-              {m.position !== null && (
-                <span className="tabular-nums text-dim">{formatClock(m.position)}</span>
-              )}
-            </div>
-            <p className="whitespace-pre-wrap break-words text-sm leading-[1.62]">{m.text}</p>
-          </div>
-        ))}
-      </div>
+        {messages.map((m) => {
+          const flewIn = landed.includes(m.id);
+          return (
+            <motion.div
+              key={flewIn ? `${m.id}-landed` : m.id}
+              // Shares its layoutId with the toast it came from, so Motion morphs
+              // one into the other. The CSS entrance would fight that transform.
+              layoutId={flewIn ? chatLayoutId(m.id) : undefined}
+              // The toast is gone the instant this takes over, so there is
+              // nothing to crossfade with.
+              layoutCrossfade={false}
+              transition={HANDOFF_SPRING}
+              className={`max-w-[88%] rounded border px-[13px] py-2.5 ${
+                flewIn ? '' : '[animation:ry-bubble_.45s_cubic-bezier(.2,.8,.2,1)_both]'
+              } ${
+                m.mine
+                  ? 'self-end border-foreground/15'
+                  : 'self-start border-gold/30 border-l-2 border-l-gold/75'
+              }`}
+            >
+              {/* `layout` on the contents undoes the parent's scale in flight, so
+                  the text keeps its shape while the box morphs from toast to line. */}
+              <motion.div
+                layout={flewIn}
+                transition={HANDOFF_SPRING}
+                className="mb-[7px] flex justify-between gap-3.5 font-mono text-[9px] uppercase tracking-[0.17em]"
+              >
+                <span className={m.mine ? 'text-muted' : 'text-gold-hi'}>
+                  {m.mine ? 'you' : them}
+                </span>
+                {m.position !== null && (
+                  <span className="tabular-nums text-dim">{formatClock(m.position)}</span>
+                )}
+              </motion.div>
+              <motion.p
+                layout={flewIn}
+                transition={HANDOFF_SPRING}
+                className="whitespace-pre-wrap break-words text-sm leading-[1.62]"
+              >
+                {m.text}
+              </motion.p>
+            </motion.div>
+          );
+        })}
+      </motion.div>
 
-      <div className="flex-none border-t border-line px-[22px] pb-5 pt-4">
+      <div className="flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
         <div className="flex items-end gap-3">
           <input
             value={draft}
@@ -192,33 +230,85 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   );
 }
 
+const chatLayoutId = (id: number) => `chat-line-${id}`;
+
+/** One spring for the toast-to-aside flight, on both ends of it. */
+const HANDOFF_SPRING = {
+  type: 'spring',
+  stiffness: 260,
+  damping: 30,
+  mass: 0.9,
+} as const;
+
+/**
+ * A toast's exit. AnimatePresence hands the exiting toast the id being flown
+ * into the aside; that one vanishes on the spot, because its line has already
+ * taken over from exactly where it was. The rest slide off as usual.
+ */
+const toastExit = (id: number) => (handoffId: number | null) =>
+  handoffId === id ? { opacity: 0, transition: { duration: 0 } } : { opacity: 0, x: 14 };
+
+/** Longer than Motion's post-resize hold on layout animations (250ms). */
+const RESIZE_SETTLE_MS = 300;
+
+const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+
 /**
  * While the aside is collapsed or fullscreen hides it, what arrives floats in
- * bottom-right, above the control bar when that is showing. Clicking one is
- * the way to answer: it leaves fullscreen, opens the aside and puts the cursor
- * in the reply box.
+ * bottom-right, above the control bar when that is showing.
+ *
+ * Clicking one is the way to answer. It leaves fullscreen first, then opens
+ * the aside and hands the toast over in the same moment: toast and line share
+ * a layoutId, so the toast flies into its place in the conversation while the
+ * aside opens around it.
  */
 export function ChatToasts({ barVisible }: { barVisible: boolean }) {
   const toasts = useRuya((s) => s.chatToasts);
   const peerUserId = useRuya((s) => s.peerUserId);
-  const setChatOpen = useRuya((s) => s.setChatOpen);
-  if (toasts.length === 0) return null;
   const them = nameOf(peerUserId);
+  // The toast being flown into the aside. It hands over to its line at once
+  // instead of fading: the aside's widening moves the whole stage, and a
+  // fading copy left behind would drift away from the line in flight.
+  const [handoffId, setHandoffId] = useState<number | null>(null);
 
-  const openChat = async () => {
-    useRuya.setState({ chatToasts: [] });
-    setChatOpen(true);
+  const openChat = async (id: number) => {
+    if (useRuya.getState().chatHandoffPending) return;
+    setHandoffId(id);
+    // Holds the toasts on screen through the fullscreen exit; setChatOpen
+    // (called when fullscreen ends) would otherwise clear them straight away.
+    useRuya.setState({ chatHandoffPending: true });
     if (document.fullscreenElement) {
-      try {
-        await document.exitFullscreen();
-      } catch {
-        // Already on its way out; the aside opens either way.
-      }
+      // Out of fullscreen first, and only then the animation: the page has to
+      // be at its windowed size before anything is measured.
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          document.removeEventListener('fullscreenchange', done);
+          resolve();
+        };
+        document.addEventListener('fullscreenchange', done);
+        document.exitFullscreen().catch(done);
+      });
+      // Motion holds layout animations back briefly after a window resize,
+      // and leaving fullscreen is one. Give it that moment, or the flight is
+      // skipped and the line just appears.
+      await new Promise((r) => setTimeout(r, RESIZE_SETTLE_MS));
     }
-    // The aside mounts its column on the next render.
-    requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>('aside[aria-label="Chat"] :is(input, textarea)')?.focus();
-    });
+
+    // One update, so both animations start on the same frame: the aside
+    // widens (CSS) while the toast leaves and its line mounts under the same
+    // layoutId, which Motion morphs between.
+    useRuya.setState((s) => ({
+      chatOpen: true,
+      unread: 0,
+      chatToasts: [],
+      chatHandoffPending: false,
+      chatLanded: s.messages.some((m) => m.id === id)
+        ? [...s.chatLanded.filter((x) => x !== id), id].slice(-50)
+        : s.chatLanded,
+    }));
+
+    await nextFrame();
+    document.querySelector<HTMLElement>('aside[aria-label="Chat"] :is(input, textarea)')?.focus();
   };
 
   return (
@@ -226,23 +316,32 @@ export function ChatToasts({ barVisible }: { barVisible: boolean }) {
       className="pointer-events-none absolute right-[26px] z-10 flex flex-col items-end gap-2.5 transition-[bottom] duration-[550ms] ease-[cubic-bezier(.2,.8,.2,1)]"
       style={{ bottom: barVisible ? 132 : 26 }}
     >
-      {toasts.map((c) => (
-        <button
-          key={c.id}
-          type="button"
-          onClick={() => void openChat()}
-          aria-label={`Message from ${them}: ${c.text}. Open chat`}
-          className="pointer-events-auto block w-[min(320px,74vw)] cursor-pointer rounded border border-gold/45 border-l-2 border-l-gold bg-[rgba(20,19,18,0.92)] px-[15px] py-3 text-left text-foreground shadow-[0_14px_40px_rgba(11,11,10,0.55)] backdrop-blur-md transition-[border-color,background-color] duration-300 hover:border-gold hover:bg-[rgba(28,26,24,0.96)] [animation:ry-msg_5.4s_cubic-bezier(.2,.8,.2,1)_both]"
-        >
-          <span className="mb-[7px] flex justify-between gap-3 font-mono text-[9px] uppercase tracking-[0.18em]">
-            <span className="text-gold-hi">{them}</span>
-            {c.position !== null && (
-              <span className="tabular-nums text-dim">{formatClock(c.position)}</span>
-            )}
-          </span>
-          <span className="block break-words text-sm leading-[1.6]">{c.text}</span>
-        </button>
-      ))}
+      <AnimatePresence custom={handoffId}>
+        {toasts.map((c) => (
+          <motion.button
+            key={c.id}
+            layoutId={chatLayoutId(c.id)}
+            type="button"
+            onClick={() => void openChat(c.id)}
+            aria-label={`Message from ${them}: ${c.text}. Open chat`}
+            initial={{ opacity: 0, x: 30 }}
+            animate={{ opacity: 1, x: 0 }}
+            variants={{ exit: toastExit(c.id) }}
+            custom={handoffId}
+            exit="exit"
+            transition={HANDOFF_SPRING}
+            className="pointer-events-auto block w-[min(320px,74vw)] cursor-pointer rounded border border-gold/45 border-l-2 border-l-gold bg-[rgba(20,19,18,0.92)] px-[15px] py-3 text-left text-foreground shadow-[0_14px_40px_rgba(11,11,10,0.55)] backdrop-blur-md transition-[border-color,background-color] duration-300 hover:border-gold hover:bg-[rgba(28,26,24,0.96)]"
+          >
+            <span className="mb-[7px] flex justify-between gap-3 font-mono text-[9px] uppercase tracking-[0.18em]">
+              <span className="text-gold-hi">{them}</span>
+              {c.position !== null && (
+                <span className="tabular-nums text-dim">{formatClock(c.position)}</span>
+              )}
+            </span>
+            <span className="block break-words text-sm leading-[1.6]">{c.text}</span>
+          </motion.button>
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
