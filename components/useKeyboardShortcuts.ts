@@ -38,7 +38,7 @@ function defersToTarget(target: EventTarget | null, key: string): boolean {
       return true;
     case 'INPUT': {
       const type = (target as HTMLInputElement).type;
-      // Chat lands here in Phase 2; a text field keeps every key.
+      // The chat input lands here; a text field keeps every key.
       if (!['range', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(type)) {
         return true;
       }
@@ -57,6 +57,8 @@ export interface ShortcutHandlers {
   onToggleKeys?: () => void;
   /** Escape — close whatever panel is open. */
   onEscape?: () => void;
+  /** `c` — show or hide the chat aside. */
+  onToggleChat?: () => void;
 }
 
 export function useKeyboardShortcuts(
@@ -151,6 +153,11 @@ export function useKeyboardShortcuts(
           showToast(next ? 'Muted' : `Volume ${Math.round(status.volume * 100)}%`);
           return;
         }
+
+        case 'c':
+        case 'C':
+          handlersRef.current.onToggleChat?.();
+          return;
 
         case 's':
         case 'S': {

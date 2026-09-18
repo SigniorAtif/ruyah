@@ -34,6 +34,9 @@ export function ControlBar({
 }) {
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
+  const chatOpen = useRuya((s) => s.chatOpen);
+  const unread = useRuya((s) => s.unread);
+  const setChatOpen = useRuya((s) => s.setChatOpen);
   const [scrub, setScrub] = useState<number | null>(null);
   const [hover, setHover] = useState<number | null>(null);
   const dragging = useRef(false);
@@ -221,6 +224,22 @@ export function ControlBar({
                 keys
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => setChatOpen(!chatOpen)}
+              aria-label={unread > 0 ? `Chat, ${unread} unread` : 'Chat'}
+              aria-pressed={chatOpen}
+              className={`flex cursor-pointer items-center gap-2 rounded border px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] transition-colors duration-[350ms] hover:border-gold hover:text-gold-hi ${
+                chatOpen ? 'border-gold bg-gold/10 text-gold-hi' : 'border-foreground/15 bg-transparent text-foreground'
+              }`}
+            >
+              <span>chat</span>
+              {unread > 0 && (
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-gold px-1 text-[9.5px] tabular-nums text-background [animation:ry-pop_.35s_cubic-bezier(.2,.8,.2,1)_both]">
+                  {unread}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={toggleFullscreen}

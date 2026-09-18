@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar } from './ControlBar';
 import { SyncIndicator } from './SyncIndicator';
@@ -32,6 +33,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const peerFingerprint = useRuya((s) => s.peerFingerprint);
   const setReady = useRuya((s) => s.setReady);
   const leave = useRuya((s) => s.leave);
+  const setChatOpen = useRuya((s) => s.setChatOpen);
 
   const sameEncode = fingerprintsMatch(fingerprint, peerFingerprint);
 
@@ -41,6 +43,7 @@ export function VideoPlayer({ code }: { code: string }) {
       setKeysOpen(false);
       setTracksOpen(false);
     },
+    onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
 
   // A hard load of /room/CODE has no File — it cannot survive a URL — so send
@@ -95,85 +98,93 @@ export function VideoPlayer({ code }: { code: string }) {
   };
 
   return (
-    <div
-      ref={containerRef}
-      onMouseMove={wake}
-      onTouchStart={wake}
-      // h-dvh, not flex-1: the <video> needs a definite height to resolve
-      // h-full against, or it falls back to its intrinsic size and pushes the
-      // control bar off the bottom of the screen.
-      className={`relative h-dvh w-full overflow-hidden bg-stage ${barVisible ? '' : 'cursor-none'}`}
-    >
-      <video
-        ref={videoRef}
-        src={objectUrl}
-        onClick={() => {
-          wake();
-          // A click on the frame first dismisses an open panel, like Escape.
-          if (tracksOpen) {
-            setTracksOpen(false);
-            return;
-          }
-          getEngine()?.togglePlay();
-        }}
-        className="absolute inset-0 h-full w-full object-contain transition-[filter] duration-700"
-        style={{ filter: blocked || keysOpen ? 'blur(8px)' : undefined }}
-        playsInline
-        // No `controls`: every action routes through PlayerEngine (§11).
-      />
-
-      {/* Outside ControlBar on purpose: the sync state stays readable when the
-          bar has faded (rule 6). */}
-      <SyncIndicator />
-
-      {sameEncode === false && !mismatchDismissed && (
-        <div
-          role="status"
-          className="absolute inset-x-0 top-0 z-[7] flex items-start gap-3.5 border-b border-warn/40 bg-stage/85 px-6 py-3.5 backdrop-blur-md [animation:ry-in_.5s_cubic-bezier(.2,.8,.2,1)_both]"
-        >
-          <span aria-hidden className="flex-none font-mono text-xs leading-normal text-warn">
-            ⚠
-          </span>
-          <p className="max-w-[820px] flex-1 text-[13.5px] leading-[1.55] text-warn">
-            You are watching different encodes. Timestamps may not line up, so
-            the same moment can land at different points in each copy.
-          </p>
-          <button
-            type="button"
-            onClick={() => setMismatchDismissed(true)}
-            className="flex-none cursor-pointer border-0 bg-transparent py-0 pl-3 pr-0 font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted transition-colors duration-300 hover:text-foreground"
-          >
-            dismiss
-          </button>
-        </div>
-      )}
-
-      <Toast barVisible={barVisible} />
-
-      {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
-
-      {mediaError ? (
-        <PlayerOverlay
-          kicker="media"
-          tone="bad"
-          title="This file will not play here"
-          body={`${mediaError} Nothing is sent anywhere either way.`}
-          primary={{ label: 'Choose another file', onClick: chooseAnotherFile }}
-          onLeave={leave}
+    // The stage and the chat aside side by side. Fullscreen takes the stage
+    // alone, which is what hides the aside there.
+    <div className="relative flex h-dvh w-full overflow-hidden bg-stage">
+      <div
+        ref={containerRef}
+        onMouseMove={wake}
+        onTouchStart={wake}
+        // h-full of a definite h-dvh row: the <video> needs a definite height to
+        // resolve h-full against, or it falls back to its intrinsic size and
+        // pushes the control bar off the bottom of the screen.
+        className={`relative h-full min-w-0 flex-1 overflow-hidden bg-stage ${barVisible ? '' : 'cursor-none'}`}
+      >
+        <video
+          ref={videoRef}
+          src={objectUrl}
+          onClick={() => {
+            wake();
+            // A click on the frame first dismisses an open panel, like Escape.
+            if (tracksOpen) {
+              setTracksOpen(false);
+              return;
+            }
+            getEngine()?.togglePlay();
+          }}
+          className="absolute inset-0 h-full w-full object-contain transition-[filter] duration-700"
+          style={{ filter: blocked || keysOpen ? 'blur(8px)' : undefined }}
+          playsInline
+          // No `controls`: every action routes through PlayerEngine (§11).
         />
-      ) : (
-        <ConnectionOverlay onLeave={leave} />
-      )}
 
-      <ControlBar
-        visible={barVisible}
-        containerRef={containerRef}
-        showKeysHint={showKeysHint}
-        onOpenKeys={() => setKeysOpen(true)}
-        tracksOpen={tracksOpen}
-        onToggleTracks={() => setTracksOpen((v) => !v)}
-      />
+        {/* Outside ControlBar on purpose: the sync state stays readable when the
+            bar has faded (rule 6). */}
+        <SyncIndicator />
 
+        {sameEncode === false && !mismatchDismissed && (
+          <div
+            role="status"
+            className="absolute inset-x-0 top-0 z-[7] flex items-start gap-3.5 border-b border-warn/40 bg-stage/85 px-6 py-3.5 backdrop-blur-md [animation:ry-in_.5s_cubic-bezier(.2,.8,.2,1)_both]"
+          >
+            <span aria-hidden className="flex-none font-mono text-xs leading-normal text-warn">
+              ⚠
+            </span>
+            <p className="max-w-[820px] flex-1 text-[13.5px] leading-[1.55] text-warn">
+              You are watching different encodes. Timestamps may not line up, so
+              the same moment can land at different points in each copy.
+            </p>
+            <button
+              type="button"
+              onClick={() => setMismatchDismissed(true)}
+              className="flex-none cursor-pointer border-0 bg-transparent py-0 pl-3 pr-0 font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted transition-colors duration-300 hover:text-foreground"
+            >
+              dismiss
+            </button>
+          </div>
+        )}
+
+        <Toast barVisible={barVisible} />
+
+        {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
+
+        {mediaError ? (
+          <PlayerOverlay
+            kicker="media"
+            tone="bad"
+            title="This file will not play here"
+            body={`${mediaError} Nothing is sent anywhere either way.`}
+            primary={{ label: 'Choose another file', onClick: chooseAnotherFile }}
+            onLeave={leave}
+          />
+        ) : (
+          <ConnectionOverlay onLeave={leave} />
+        )}
+
+        <ControlBar
+          visible={barVisible}
+          containerRef={containerRef}
+          showKeysHint={showKeysHint}
+          onOpenKeys={() => setKeysOpen(true)}
+          tracksOpen={tracksOpen}
+          onToggleTracks={() => setTracksOpen((v) => !v)}
+        />
+
+        <ChatToasts barVisible={barVisible} />
+      </div>
+      <ChatAside />
+
+      {/* Over the aside too: the beat is the whole screen's moment. */}
       <Beat />
     </div>
   );
@@ -188,6 +199,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['S', 'subtitles on / off'],
   ['F', 'fullscreen'],
   ['0 – 9', 'jump to 0–90%'],
+  ['C', 'show / hide chat'],
   ['?', 'this sheet'],
 ];
 

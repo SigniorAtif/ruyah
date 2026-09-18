@@ -132,6 +132,20 @@ video::cue {
 @keyframes ry-spin {
   to { transform: rotate(360deg); }
 }
+@keyframes ry-bubble {
+  from { opacity: 0; transform: translateY(9px) scale(0.985); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-msg {
+  0% { opacity: 0; transform: translateX(30px); }
+  9% { opacity: 1; transform: none; }
+  84% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateX(14px); }
+}
+@keyframes ry-slide-l {
+  from { opacity: 0; transform: translateX(22px); }
+  to { opacity: 1; transform: none; }
+}
 @keyframes ry-fade-out {
   from { opacity: 1; }
   to { opacity: 0; }
