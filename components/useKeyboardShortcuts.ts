@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
 import { getEngine, useRuya } from '@/lib/store';
 
@@ -52,13 +52,40 @@ function defersToTarget(target: EventTarget | null, key: string): boolean {
   }
 }
 
-export function useKeyboardShortcuts(containerRef: RefObject<HTMLDivElement | null>) {
+export interface ShortcutHandlers {
+  /** `?` — show or hide the keys sheet. */
+  onToggleKeys?: () => void;
+  /** Escape — close whatever panel is open. */
+  onEscape?: () => void;
+}
+
+export function useKeyboardShortcuts(
+  containerRef: RefObject<HTMLDivElement | null>,
+  handlers: ShortcutHandlers = {},
+) {
+  // Held in a ref so a new closure each render does not re-bind the listener.
+  const handlersRef = useRef(handlers);
+  useEffect(() => {
+    handlersRef.current = handlers;
+  });
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Leave the browser's own chords alone.
+      // Escape never belongs to the focused element here, and it must work
+      // even from inside a panel's own controls.
+      if (event.key === 'Escape') {
+        handlersRef.current.onEscape?.();
+        return;
+      }
+      // Leave the browser's own chords alone. Shift is allowed: `?` needs it.
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.repeat && event.key === ' ') return; // holding space is not a rattle of toggles
       if (defersToTarget(event.target, event.key)) return;
+
+      if (event.key === '?') {
+        handlersRef.current.onToggleKeys?.();
+        return;
+      }
 
       const engine = getEngine();
       const { status, showToast } = useRuya.getState();

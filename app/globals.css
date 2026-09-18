@@ -3,70 +3,138 @@
 /*
  * One palette, always dark. This is for watching a film in a dark room, so
  * there is no light mode to switch to and nothing here competes with the frame.
+ * Warm paper-on-ink rather than blue-black: the chrome should read like a
+ * programme note, not a dashboard.
  */
 :root {
-  --background: #08080b;
-  --foreground: #e9e9ec;
-  --muted: #8b8b96;
-  --line: #1e1e24;
-  --panel: #101014;
-  --accent: #c9a227;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --bad: #f87171;
+  --background: #191715;
+  --panel: #1c1a18;
+  --stage: #0b0b0a;
+  --foreground: #f4f1ec;
+  --muted: #a09a92;
+  --faint: #6b6660;
+  --dim: #57534d;
+  --gold: #b68235;
+  --gold-hi: #e1ad66;
+  --kicker: #c9a15c;
+  --ok: #8fb583;
+  --warn: #d9b06a;
+  --bad: #c4776a;
+  --line: rgba(244, 241, 236, 0.13);
+  --line-soft: rgba(244, 241, 236, 0.09);
+  --line-strong: rgba(244, 241, 236, 0.24);
   color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-panel: var(--panel);
+  --color-stage: var(--stage);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
-  --color-line: var(--line);
-  --color-panel: var(--panel);
-  --color-accent: var(--accent);
+  --color-faint: var(--faint);
+  --color-dim: var(--dim);
+  --color-gold: var(--gold);
+  --color-gold-hi: var(--gold-hi);
+  --color-kicker: var(--kicker);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-bad: var(--bad);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-line: var(--line);
+  --color-line-soft: var(--line-soft);
+  --color-line-strong: var(--line-strong);
+  --font-display: var(--font-cormorant), Georgia, serif;
+  --font-serif: var(--font-lora), Georgia, serif;
+  --font-mono: var(--font-courier), ui-monospace, monospace;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), system-ui, sans-serif;
+  font-family: var(--font-lora), Georgia, serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* The scrub and volume rails, drawn the same way in every browser. */
-input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  background: transparent;
-  cursor: pointer;
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
-input[type="range"]::-webkit-slider-runnable-track {
-  height: 3px;
-  border-radius: 999px;
-  background: var(--track, #2a2a33);
+input::placeholder {
+  color: var(--dim);
 }
-input[type="range"]::-moz-range-track {
-  height: 3px;
-  border-radius: 999px;
-  background: var(--track, #2a2a33);
+*:focus-visible {
+  outline: 2px solid var(--gold);
+  outline-offset: 3px;
 }
-input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  margin-top: -4.5px;
-  border-radius: 999px;
-  background: var(--foreground);
+::selection {
+  background: rgba(182, 130, 53, 0.32);
 }
-input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--foreground);
+
+/* The small mono label that heads every field and panel. */
+@utility kicker {
+  font-family: var(--font-courier), ui-monospace, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+@keyframes ry-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.8); }
+}
+@keyframes ry-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-in-soft {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ry-pop {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-rise {
+  0% { opacity: 0; transform: translate(-50%, 14px); }
+  14% { opacity: 1; transform: translate(-50%, 0); }
+  80% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -6px); }
+}
+@keyframes ry-glyph {
+  from { opacity: 0; transform: translateY(-8px) rotate(-3deg); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(320%); }
+}
+@keyframes ry-meet-l {
+  from { opacity: 0; transform: translateX(-26px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-meet-r {
+  from { opacity: 0; transform: translateX(26px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ry-rule {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes ry-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes ry-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
