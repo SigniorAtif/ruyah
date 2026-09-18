@@ -49,3 +49,6 @@ next-env.d.ts
 # Local agent/tooling state
 /.claude/
 /.code-review-graph/
+
+# copied from node_modules by scripts/copy-ffmpeg-worker.mjs
+/public/ffmpeg/
