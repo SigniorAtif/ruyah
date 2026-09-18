@@ -159,7 +159,7 @@ export function Lobby() {
               setName(e.target.value);
               setLocalError(null);
             }}
-            placeholder="Aisha"
+            placeholder="Your Beautiful Name "
             maxLength={24}
             autoComplete="off"
             className="w-full border-0 border-b border-line-strong bg-transparent px-0.5 py-[11px] font-display text-[26px] outline-none transition-colors duration-300 focus:border-gold"
