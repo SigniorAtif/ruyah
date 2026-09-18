@@ -151,6 +151,16 @@ interface RuyaState {
   unread: number;
   /** Lines floated over the film while the aside is collapsed or fullscreen hides it. */
   chatToasts: ChatMessage[];
+  /**
+   * A clicked toast is on its way into the aside: the toasts stay put until
+   * the aside has opened, so there is something to fly from.
+   */
+  chatHandoffPending: boolean;
+  /**
+   * Lines that arrived by flying in from a toast. They keep a separate key
+   * from then on, so they are not remounted and re-animated later.
+   */
+  chatLanded: number[];
 
   /**
    * Why the last attempt to join failed. A toast is not enough for these: the
@@ -227,6 +237,8 @@ const EMPTY_SESSION: SessionData = {
   chatOpen: true,
   unread: 0,
   chatToasts: [],
+  chatHandoffPending: false,
+  chatLanded: [],
 
   sessionError: null,
 };
@@ -481,7 +493,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     set((s) => ({
       chatOpen: open,
       unread: open ? 0 : s.unread,
-      chatToasts: open && !document.fullscreenElement ? [] : s.chatToasts,
+      chatToasts:
+        open && !document.fullscreenElement && !s.chatHandoffPending ? [] : s.chatToasts,
     }));
   },
 
