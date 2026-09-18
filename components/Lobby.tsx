@@ -122,7 +122,7 @@ export function Lobby() {
     localError ?? (sessionError ? describeSessionError(sessionError) : null);
 
   return (
-    <main className="grid min-h-screen flex-1 grid-cols-[repeat(auto-fit,minmax(min(360px,100%),1fr))] bg-background [animation:ry-in-soft_.7s_ease_both]">
+    <main className="grid min-h-screen flex-1 grid-cols-1 min-[720px]:grid-cols-[minmax(0,3fr)_minmax(360px,2fr)] bg-background [animation:ry-in-soft_.7s_ease_both]">
       <section className="flex flex-col justify-between gap-14 border-line px-[clamp(16px,5vw,72px)] py-[clamp(40px,6vw,88px)] min-[720px]:border-r">
         <div>
           <h1 className="mb-[26px] font-display text-[clamp(56px,8vw,104px)] font-light leading-[0.9] tracking-[-0.02em]">
@@ -405,7 +405,7 @@ function Room({ onEnter }: { onEnter: () => void }) {
       : 'playback begins on its own when both of you are ready';
 
   return (
-    <main className="grid min-h-screen flex-1 grid-cols-[repeat(auto-fit,minmax(min(360px,100%),1fr))] bg-background [animation:ry-in-soft_.6s_ease_both]">
+    <main className="grid min-h-screen flex-1 grid-cols-1 min-[720px]:grid-cols-[minmax(0,3fr)_minmax(360px,2fr)] bg-background [animation:ry-in-soft_.6s_ease_both]">
       <section className="flex flex-col justify-between gap-12 border-line px-[clamp(16px,5vw,66px)] py-[clamp(40px,6vw,80px)] min-[720px]:border-r">
         <div>
           <div className="mb-5 flex flex-wrap items-center gap-3.5">
