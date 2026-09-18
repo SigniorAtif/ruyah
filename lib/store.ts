@@ -13,6 +13,7 @@
 import { create } from 'zustand';
 import { WebSocketTransport } from './sync/websocketTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
+import { prefetchPreferredAudio, releaseFile } from '@/lib/player/audioTracks';
 import { fingerprintFile } from './player/fingerprint';
 import type {
   SyncErrorCode,
@@ -294,6 +295,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
   },
 
   async setFile(file) {
+    const previousFile = get().file;
+    if (previousFile && previousFile !== file) releaseFile(previousFile);
     const previous = get().objectUrl;
     // §12: revoke or the file's memory mapping leaks.
     if (previous) URL.revokeObjectURL(previous);
@@ -339,6 +342,9 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
     probe.src = objectUrl;
     await meta;
+    // Start pulling out the preferred audio language now, while the room waits,
+    // so it is usually ready by the time the film starts.
+    if (!get().fileError) void prefetchPreferredAudio(file, get().duration);
 
     try {
       const fingerprint = await fingerprintFile(file);
@@ -401,6 +407,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     transport = null;
     const url = get().objectUrl;
     if (url) URL.revokeObjectURL(url);
+    const file = get().file;
+    if (file) releaseFile(file);
     if (toastTimer !== null) clearTimeout(toastTimer);
     toastTimer = null;
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
