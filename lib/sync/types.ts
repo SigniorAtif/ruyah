@@ -36,7 +36,10 @@ export type SyncMessage =
   // t2 is optional so an older responder that only sends t1 still works — the
   // estimate then degrades to the three-stamp form it always used.
   | { type: 'pong'; t0: number; t1: number; t2?: number }
-  | { type: 'chat'; userId: string; text: string; at: number }; // wire only, no UI in Phase 1
+  // `at` is epoch ms like every other stamp here. `position` is the sender's
+  // film time when they sent it, so each side can show the moment it was said.
+  // Optional and additive: the relay forwards chat verbatim and never reads it.
+  | { type: 'chat'; userId: string; text: string; at: number; position?: number };
 
 /**
  * Why a session could not proceed.
