@@ -1,10 +1,11 @@
 'use client';
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { MediaTrack } from '@/lib/player/engine';
 import { formatClock } from '@/lib/player/fingerprint';
 import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
+import { ALL_EMOJI, MAX_BURST } from '@/lib/emoji';
 import { getEngine, REACTIONS, useRuya } from '@/lib/store';
 import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
@@ -503,32 +504,236 @@ const popIn = {
   transition: { type: 'spring', stiffness: 420, damping: 30 },
 } as const;
 
-/** Six reactions in a pill above the button. They float over both screens. */
+/** Emoji buttons are this square, in the row and the grid alike. */
+const EMOJI_PX = 36;
+/** Released before this, a press is a tap: one reaction. */
+const TAP_MS = 180;
+/** How long holding takes to grow from one reaction to MAX_BURST. */
+const GROW_MS = 1_300;
+/** How big the held emoji gets at MAX_BURST. */
+const MAX_SCALE = 3;
+
+/** 0 while it is still a tap, then 0..1 as the hold grows toward MAX_BURST. */
+function holdProgress(elapsedMs: number): number {
+  return Math.min(1, Math.max(0, (elapsedMs - TAP_MS) / GROW_MS));
+}
+
+function burstAt(progress: number): number {
+  return 1 + Math.round(progress * (MAX_BURST - 1));
+}
+
+interface Held {
+  emoji: string;
+  /** Centre of the pressed button, relative to the popover's root. */
+  cx: number;
+  cy: number;
+}
+
+/**
+ * The quick row, with an arrow that grows it into a scrollable square of
+ * every reaction. A tap sends one; holding grows the emoji and the burst
+ * with it, up to MAX_BURST, where it shakes to say it will not get bigger.
+ * They float over both screens.
+ */
 function ReactPopover({ onDone }: { onDone: () => void }) {
   const sendReaction = useRuya((s) => s.sendReaction);
+  const reduceMotion = useReducedMotion();
+  const [expanded, setExpanded] = useState(false);
+  const [held, setHeld] = useState<Held | null>(null);
+  const [count, setCount] = useState(1);
+  const [maxed, setMaxed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const startedAt = useRef(0);
+  const frame = useRef<number | null>(null);
+  const scale = useMotionValue(1);
+  // The count rides just above the emoji's top edge as it grows.
+  const badgeY = useTransform(scale, (v) => -(EMOJI_PX * v) / 2 - 14);
+
+  const stopTicking = () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+  };
+  useEffect(() => stopTicking, []);
+
+  const press = (emoji: string, e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0 || !rootRef.current) return;
+    // Keeps the release ours even if the finger drifts off the button.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const b = e.currentTarget.getBoundingClientRect();
+    const r = rootRef.current.getBoundingClientRect();
+    setHeld({ emoji, cx: b.left + b.width / 2 - r.left, cy: b.top + b.height / 2 - r.top });
+    setCount(1);
+    setMaxed(false);
+    scale.set(1);
+    // Same clock as performance.now(), without calling it here.
+    startedAt.current = e.timeStamp;
+    stopTicking();
+    const tick = () => {
+      const t = holdProgress(performance.now() - startedAt.current);
+      scale.set(1 + (MAX_SCALE - 1) * t);
+      setCount(burstAt(t));
+      if (t >= 1) {
+        setMaxed(true);
+        frame.current = null;
+        return;
+      }
+      frame.current = requestAnimationFrame(tick);
+    };
+    frame.current = requestAnimationFrame(tick);
+  };
+
+  const release = () => {
+    if (!held) return;
+    stopTicking();
+    sendReaction(held.emoji, burstAt(holdProgress(performance.now() - startedAt.current)));
+    setHeld(null);
+    onDone();
+  };
+
+  // The browser took the touch for a scroll: no reaction.
+  const cancel = () => {
+    stopTicking();
+    setHeld(null);
+  };
+
+  const emojiButton = (emoji: string) => (
+    <button
+      key={emoji}
+      type="button"
+      role="menuitem"
+      aria-label={emoji}
+      onPointerDown={(e) => press(emoji, e)}
+      onPointerUp={release}
+      onPointerCancel={cancel}
+      onContextMenu={(e) => e.preventDefault()}
+      // Pointer presses are handled above; this is Enter or Space.
+      onClick={(e) => {
+        if (e.detail !== 0) return;
+        sendReaction(emoji);
+        onDone();
+      }}
+      style={{ width: EMOJI_PX, height: EMOJI_PX }}
+      className={`flex cursor-pointer select-none items-center justify-center rounded-full border-0 bg-transparent text-[20px] transition-[background-color,transform,opacity] duration-200 [-webkit-touch-callout:none] hover:scale-125 hover:bg-foreground/10 ${
+        held?.emoji === emoji ? 'opacity-0' : ''
+      }`}
+    >
+      {emoji}
+    </button>
+  );
+
+  const fade = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.2, delay: 0.08 } },
+    exit: { opacity: 0, transition: { duration: 0.1 } },
+  } as const;
+
   return (
     <motion.div
       {...popIn}
-      role="menu"
-      aria-label="Reactions"
-      className="absolute bottom-[calc(100%+16px)] left-1/2 z-[8] flex gap-1 rounded-full border border-foreground/15 bg-[rgba(25,23,21,0.96)] px-2 py-1.5 backdrop-blur-md"
+      ref={rootRef}
+      className="absolute bottom-[calc(100%+16px)] left-1/2 z-[8]"
       style={{ x: '-50%' }}
     >
-      {REACTIONS.map((emoji) => (
-        <button
-          key={emoji}
-          type="button"
-          role="menuitem"
-          onClick={() => {
-            sendReaction(emoji);
-            onDone();
-          }}
-          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-[20px] transition-[background-color,transform] duration-200 hover:scale-125 hover:bg-foreground/10 active:scale-95"
+      <motion.div
+        layout
+        role="menu"
+        aria-label="Reactions"
+        initial={false}
+        animate={{ borderRadius: expanded ? 14 : 24 }}
+        transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+        className="overflow-hidden border border-foreground/15 bg-[rgba(25,23,21,0.96)] backdrop-blur-md"
+      >
+        <AnimatePresence mode="popLayout" initial={false}>
+          {expanded ? (
+            <motion.div key="all" layout {...fade} className="p-2">
+              <div className="flex items-center justify-between pb-1 pl-2">
+                <span className="kicker">all reactions</span>
+                <button
+                  type="button"
+                  onClick={() => setExpanded(false)}
+                  aria-label="Fewer reactions"
+                  aria-expanded
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
+                >
+                  <ChevronIcon down />
+                </button>
+              </div>
+              <div
+                className="grid max-h-[228px] overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,black_86%,transparent)] [scrollbar-width:none]"
+                style={{ gridTemplateColumns: `repeat(7, ${EMOJI_PX}px)` }}
+              >
+                {ALL_EMOJI.map(emojiButton)}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div key="quick" layout {...fade} className="flex items-center gap-1 px-2 py-1.5">
+              {REACTIONS.map(emojiButton)}
+              <button
+                type="button"
+                onClick={() => setExpanded(true)}
+                aria-label="More reactions"
+                aria-expanded={false}
+                className="ml-0.5 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
+              >
+                <ChevronIcon />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* The held emoji, lifted out of the clipped grid so it can outgrow it. */}
+      {held && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute z-10"
+          style={{ left: held.cx, top: held.cy }}
         >
-          {emoji}
-        </button>
-      ))}
+          <motion.span
+            className="absolute flex select-none items-center justify-center text-[20px] drop-shadow-[0_6px_18px_rgba(0,0,0,0.55)]"
+            style={{ width: EMOJI_PX, height: EMOJI_PX, left: -EMOJI_PX / 2, top: -EMOJI_PX / 2, scale }}
+            animate={
+              maxed && !reduceMotion
+                ? { rotate: [0, -10, 9, -7, 6, 0], x: [0, -2.5, 2.5, -2, 2, 0] }
+                : { rotate: 0, x: 0 }
+            }
+            transition={maxed ? { duration: 0.42, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.15 }}
+          >
+            {held.emoji}
+          </motion.span>
+          {count > 1 && (
+            <motion.span
+              className={`absolute -translate-x-1/2 whitespace-nowrap rounded-full border px-2 py-0.5 font-mono text-[10.5px] tabular-nums backdrop-blur-md ${
+                maxed ? 'border-gold bg-gold/20 text-gold-hi' : 'border-foreground/15 bg-stage/80 text-foreground'
+              }`}
+              style={{ y: badgeY, top: -10 }}
+            >
+              ×{count}
+              {maxed && ' max'}
+            </motion.span>
+          )}
+        </div>
+      )}
     </motion.div>
+  );
+}
+
+function ChevronIcon({ down = false }: { down?: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ transform: down ? 'rotate(180deg)' : undefined }}
+    >
+      <path d="M6 15l6-6 6 6" />
+    </svg>
   );
 }
 

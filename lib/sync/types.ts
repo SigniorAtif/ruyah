@@ -56,6 +56,8 @@ export type SyncMessage =
       /** A short copy of that line, for when the receiver never saw it. */
       quote?: string;
       kind?: ChatKind;
+      /** A held reaction: how many copies to float. Absent means one. */
+      count?: number;
     };
 
 /** What a `chat` frame carries. Absent means an ordinary line. */

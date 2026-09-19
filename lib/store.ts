@@ -22,6 +22,7 @@ import type {
   TransportState,
 } from './sync/types';
 import { isDevMode, saveDisplayName, saveRelayUrl, validateRelayUrl } from './relayConfig';
+import { clampBurst, isKnownEmoji } from './emoji';
 
 /** No I/O/0/1 — these get read aloud over the phone. */
 const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -96,10 +97,18 @@ const CHAT_TOAST_MS = 5_400;
 let chatSeq = 0;
 /** How much of a replied-to line travels with the reply. */
 const QUOTE_CHARS = 90;
-/** The reactions offered, and the only ones shown when they arrive. */
+/** The quick row of reactions; the full set, and what arrivals are checked against, is in ./emoji. */
 export const REACTIONS = ['😂', '😭', '🥺', '🥹', '🫦', '💝'] as const;
+/** Quick row or full set: the only reactions sent, and the only ones shown when they arrive. */
+function isReaction(text: string): boolean {
+  return (REACTIONS as readonly string[]).includes(text) || isKnownEmoji(text);
+}
 /** How long a reaction floats over the film. */
 const REACTION_MS = 2_600;
+/** Gap between the copies of a held reaction, so a burst streams up rather than stacking. */
+const BURST_GAP_MS = 70;
+/** On screen at once, across both people; enough for two full bursts. */
+const REACTIONS_ON_SCREEN = 32;
 /** A typing notice lapses on its own if the next one never comes. */
 const TYPING_LAPSE_MS = 4_000;
 
@@ -120,6 +129,22 @@ export interface FloatingReaction {
   id: number;
   emoji: string;
   mine: boolean;
+  /** Copies in the burst this one came with; big bursts scatter instead of rising. */
+  burst: number;
+  /** Where it appears, as % of the stage from the left and from the bottom. */
+  x: number;
+  y: number;
+}
+
+/** Bursts bigger than this scatter over the whole screen and rock in place. */
+export const SCATTER_ABOVE = 7;
+
+/** Picked once, when it is pushed, so a re-render never moves one. */
+function reactionSpot(burst: number): { x: number; y: number } {
+  const x = 6 + Math.random() * 88;
+  // A small burst rises from the bottom 15%; a big one lands anywhere.
+  const y = burst > SCATTER_ABOVE ? 8 + Math.random() * 78 : Math.random() * 15;
+  return { x, y };
 }
 
 function wireId(): string {
@@ -217,7 +242,8 @@ interface RuyaState {
   sendChat(text: string, opts?: { position?: number; replyTo?: string }): void;
   /** Tell the other side we are typing (throttled by the caller). */
   sendTyping(): void;
-  sendReaction(emoji: string): void;
+  /** `count` above one is a held reaction; clamped to MAX_BURST. */
+  sendReaction(emoji: string, count?: number): void;
   /** Pause for both, with a reason the other person sees. */
   holdOn(reason: string): void;
   setChatOpen(open: boolean): void;
@@ -330,15 +356,23 @@ function resolveReply(
   return { wireId: replyTo, text: quote.slice(0, QUOTE_CHARS), mine: false };
 }
 
-/** Float a reaction over the film for a moment, on this side. */
+/** Float a reaction over the film for a moment, on this side; a burst streams `count` of them. */
 function pushReaction(
   set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
   emoji: string,
   mine: boolean,
+  count = 1,
 ): void {
-  const id = ++reactionSeq;
-  set((s) => ({ reactions: [...s.reactions, { id, emoji, mine }].slice(-12) }));
-  setTimeout(() => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })), REACTION_MS);
+  const float = () => {
+    const id = ++reactionSeq;
+    const spot = reactionSpot(count);
+    set((s) => ({
+      reactions: [...s.reactions, { id, emoji, mine, burst: count, ...spot }].slice(-REACTIONS_ON_SCREEN),
+    }));
+    setTimeout(() => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })), REACTION_MS);
+  };
+  float();
+  for (let i = 1; i < count; i++) setTimeout(float, i * BURST_GAP_MS);
 }
 
 export const useRuya = create<RuyaState>((set, get) => ({
@@ -383,7 +417,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
           return;
         }
         if (kind === 'reaction') {
-          if ((REACTIONS as readonly string[]).includes(msg.text)) pushReaction(set, msg.text, false);
+          if (isReaction(msg.text)) pushReaction(set, msg.text, false, clampBurst(msg.count));
           return;
         }
         const text = msg.text.trim().slice(0, CHAT_MAX_CHARS);
@@ -621,8 +655,9 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
   },
 
-  sendReaction(emoji) {
-    if (!transport || !(REACTIONS as readonly string[]).includes(emoji)) return;
+  sendReaction(emoji, count = 1) {
+    if (!transport || !isReaction(emoji)) return;
+    const burst = clampBurst(count);
     transport.send({
       type: 'chat',
       userId: get().userId,
@@ -630,8 +665,9 @@ export const useRuya = create<RuyaState>((set, get) => ({
       at: transport.syncedNow(),
       position: engine?.getStatus().position ?? 0,
       kind: 'reaction',
+      ...(burst > 1 && { count: burst }),
     });
-    pushReaction(set, emoji, true);
+    pushReaction(set, emoji, true, burst);
   },
 
   holdOn(raw) {
