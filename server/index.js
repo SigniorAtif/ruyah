@@ -119,6 +119,22 @@ wss.on('connection', (ws, req) => {
   const code = (url.searchParams.get('room') ?? '').toUpperCase();
   const userId = url.searchParams.get('user') ?? '';
 
+  // A presence probe: who else is in the room, without taking a seat. The
+  // lobby uses it to offer a rejoin only while the other person is still
+  // there. It carries no `user`, on purpose: a relay from before this existed
+  // refuses it as a bad user id instead of seating a ghost that the other
+  // person would see join and leave. Not logged, like any other refused probe.
+  if (url.searchParams.has('probe')) {
+    if (!ROOM_CODE_RE.test(code)) {
+      refuse(ws, 'bad_message', 'Bad room code.', CLOSE.BAD_MESSAGE);
+      return;
+    }
+    const as = url.searchParams.get('as') ?? '';
+    sendJson(ws, { type: 'presence', others: rooms.othersIn(code, as) });
+    ws.close(1000, 'presence');
+    return;
+  }
+
   // Deliberately not logged: anything on the public internet gets scanned, and
   // a log line per malformed probe is a free way for a stranger to fill the
   // disk. A refused probe never reaches the room registry, so there is nothing
