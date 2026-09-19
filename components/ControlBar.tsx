@@ -1,10 +1,12 @@
 'use client';
 
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
 import type { MediaTrack } from '@/lib/player/engine';
 import { formatClock } from '@/lib/player/fingerprint';
 import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
-import { getEngine, useRuya } from '@/lib/store';
+import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
+import { ALL_EMOJI, MAX_BURST } from '@/lib/emoji';
+import { getEngine, REACTIONS, useRuya } from '@/lib/store';
 import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
 /** Fraction of an element's width under the pointer, clamped to 0..1. */
@@ -12,6 +14,9 @@ function fractionAt(e: ReactPointerEvent<HTMLElement>): number {
   const r = e.currentTarget.getBoundingClientRect();
   return r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0;
 }
+
+/** The popovers and panels the bar can open; only one is open at a time. */
+export type PlayerPanel = 'tracks' | 'offset' | 'react' | 'hold';
 
 /**
  * §11 — every action here goes through PlayerEngine. Nothing in this file
@@ -23,20 +28,22 @@ export function ControlBar({
   containerRef,
   showKeysHint,
   onOpenKeys,
-  tracksOpen,
-  onToggleTracks,
-  offsetOpen,
-  onToggleOffset,
+  panel,
+  onTogglePanel,
+  onClosePanel,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
   showKeysHint: boolean;
   onOpenKeys: () => void;
-  tracksOpen: boolean;
-  onToggleTracks: () => void;
-  offsetOpen: boolean;
-  onToggleOffset: () => void;
+  panel: PlayerPanel | null;
+  onTogglePanel: (p: PlayerPanel) => void;
+  onClosePanel: () => void;
 }) {
+  const tracksOpen = panel === 'tracks';
+  const offsetOpen = panel === 'offset';
+  const onToggleTracks = () => onTogglePanel('tracks');
+  const onToggleOffset = () => onTogglePanel('offset');
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
   const chatOpen = useRuya((s) => s.chatOpen);
@@ -208,6 +215,39 @@ export function ControlBar({
 
           <div className="ml-auto flex items-center gap-[clamp(10px,1.6vw,18px)]">
             <div className="relative flex">
+              <AnimatePresence>
+                {panel === 'hold' && <HoldPopover key="hold" onDone={onClosePanel} />}
+              </AnimatePresence>
+              <button
+                type="button"
+                onClick={() => onTogglePanel('hold')}
+                aria-label="Hold on"
+                aria-expanded={panel === 'hold'}
+                title="Hold on (H)"
+                className={`flex cursor-pointer border-0 bg-transparent p-0 transition-[color,transform] duration-250 hover:text-gold-hi active:scale-90 ${
+                  panel === 'hold' ? 'text-gold-hi' : ''
+                }`}
+              >
+                <HoldIcon />
+              </button>
+            </div>
+            <div className="relative flex">
+              <AnimatePresence>
+                {panel === 'react' && <ReactPopover key="react" onDone={onClosePanel} />}
+              </AnimatePresence>
+              <button
+                type="button"
+                onClick={() => onTogglePanel('react')}
+                aria-label="React"
+                aria-expanded={panel === 'react'}
+                className={`flex cursor-pointer border-0 bg-transparent p-0 transition-[color,transform] duration-250 hover:text-gold-hi active:scale-90 ${
+                  panel === 'react' ? 'text-gold-hi' : ''
+                }`}
+              >
+                <ReactIcon />
+              </button>
+            </div>
+            <div className="relative flex">
               {tracksOpen && <TracksPanel onClose={onToggleTracks} />}
               <button
                 type="button"
@@ -362,9 +402,14 @@ function TracksPanel({ onClose }: { onClose: () => void }) {
           e.target.value = '';
         }}
       />
+      {status.subtitlesPreparing !== null && (
+        <p className="mt-2 font-mono text-[10.5px] tabular-nums text-warn">
+          reading subtitles from the file · {Math.round(status.subtitlesPreparing * 100)}%
+        </p>
+      )}
       <p className="mt-1.5 text-[11.5px] leading-[1.5] text-faint">
-        Stays on this machine. Subtitles inside an .mkv are not readable by the browser; load them
-        as a separate file.
+        Stays on this machine. Text subtitles inside the file are read out on their own; picture
+        subtitles (PGS) cannot be shown.
       </p>
 
       <div className="my-4 h-px bg-line-soft" />
@@ -448,6 +493,319 @@ function SubtitlesIcon() {
       <path d="M12.5 14h5" />
       <path d="M6.5 11h7" />
       <path d="M15.5 11h2" />
+    </svg>
+  );
+}
+
+const popIn = {
+  initial: { opacity: 0, y: 10, scale: 0.96 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: 6, scale: 0.98 },
+  transition: { type: 'spring', stiffness: 420, damping: 30 },
+} as const;
+
+/** Emoji buttons are this square, in the row and the grid alike. */
+const EMOJI_PX = 36;
+/** Released before this, a press is a tap: one reaction. */
+const TAP_MS = 180;
+/** How long holding takes to grow from one reaction to MAX_BURST. */
+const GROW_MS = 1_300;
+/** How big the held emoji gets at MAX_BURST. */
+const MAX_SCALE = 3;
+
+/** 0 while it is still a tap, then 0..1 as the hold grows toward MAX_BURST. */
+function holdProgress(elapsedMs: number): number {
+  return Math.min(1, Math.max(0, (elapsedMs - TAP_MS) / GROW_MS));
+}
+
+function burstAt(progress: number): number {
+  return 1 + Math.round(progress * (MAX_BURST - 1));
+}
+
+interface Held {
+  emoji: string;
+  /** Centre of the pressed button, relative to the popover's root. */
+  cx: number;
+  cy: number;
+}
+
+/**
+ * The quick row, with an arrow that grows it into a scrollable square of
+ * every reaction. A tap sends one; holding grows the emoji and the burst
+ * with it, up to MAX_BURST, where it shakes to say it will not get bigger.
+ * They float over both screens.
+ */
+function ReactPopover({ onDone }: { onDone: () => void }) {
+  const sendReaction = useRuya((s) => s.sendReaction);
+  const reduceMotion = useReducedMotion();
+  const [expanded, setExpanded] = useState(false);
+  const [held, setHeld] = useState<Held | null>(null);
+  const [count, setCount] = useState(1);
+  const [maxed, setMaxed] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const startedAt = useRef(0);
+  const frame = useRef<number | null>(null);
+  const scale = useMotionValue(1);
+  // The count rides just above the emoji's top edge as it grows.
+  const badgeY = useTransform(scale, (v) => -(EMOJI_PX * v) / 2 - 14);
+
+  const stopTicking = () => {
+    if (frame.current !== null) cancelAnimationFrame(frame.current);
+    frame.current = null;
+  };
+  useEffect(() => stopTicking, []);
+
+  const press = (emoji: string, e: ReactPointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0 || !rootRef.current) return;
+    // Keeps the release ours even if the finger drifts off the button.
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const b = e.currentTarget.getBoundingClientRect();
+    const r = rootRef.current.getBoundingClientRect();
+    setHeld({ emoji, cx: b.left + b.width / 2 - r.left, cy: b.top + b.height / 2 - r.top });
+    setCount(1);
+    setMaxed(false);
+    scale.set(1);
+    // Same clock as performance.now(), without calling it here.
+    startedAt.current = e.timeStamp;
+    stopTicking();
+    const tick = () => {
+      const t = holdProgress(performance.now() - startedAt.current);
+      scale.set(1 + (MAX_SCALE - 1) * t);
+      setCount(burstAt(t));
+      if (t >= 1) {
+        setMaxed(true);
+        frame.current = null;
+        return;
+      }
+      frame.current = requestAnimationFrame(tick);
+    };
+    frame.current = requestAnimationFrame(tick);
+  };
+
+  const release = () => {
+    if (!held) return;
+    stopTicking();
+    sendReaction(held.emoji, burstAt(holdProgress(performance.now() - startedAt.current)));
+    setHeld(null);
+    onDone();
+  };
+
+  // The browser took the touch for a scroll: no reaction.
+  const cancel = () => {
+    stopTicking();
+    setHeld(null);
+  };
+
+  const emojiButton = (emoji: string) => (
+    <button
+      key={emoji}
+      type="button"
+      role="menuitem"
+      aria-label={emoji}
+      onPointerDown={(e) => press(emoji, e)}
+      onPointerUp={release}
+      onPointerCancel={cancel}
+      onContextMenu={(e) => e.preventDefault()}
+      // Pointer presses are handled above; this is Enter or Space.
+      onClick={(e) => {
+        if (e.detail !== 0) return;
+        sendReaction(emoji);
+        onDone();
+      }}
+      style={{ width: EMOJI_PX, height: EMOJI_PX }}
+      className={`flex cursor-pointer select-none items-center justify-center rounded-full border-0 bg-transparent text-[20px] transition-[background-color,transform,opacity] duration-200 [-webkit-touch-callout:none] hover:scale-125 hover:bg-foreground/10 ${
+        held?.emoji === emoji ? 'opacity-0' : ''
+      }`}
+    >
+      {emoji}
+    </button>
+  );
+
+  const fade = {
+    initial: { opacity: 0 },
+    animate: { opacity: 1, transition: { duration: 0.2, delay: 0.08 } },
+    exit: { opacity: 0, transition: { duration: 0.1 } },
+  } as const;
+
+  return (
+    <motion.div
+      {...popIn}
+      ref={rootRef}
+      className="absolute bottom-[calc(100%+16px)] left-1/2 z-[8]"
+      style={{ x: '-50%' }}
+    >
+      <motion.div
+        layout
+        role="menu"
+        aria-label="Reactions"
+        initial={false}
+        animate={{ borderRadius: expanded ? 14 : 24 }}
+        transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+        className="overflow-hidden border border-foreground/15 bg-[rgba(25,23,21,0.96)] backdrop-blur-md"
+      >
+        <AnimatePresence mode="popLayout" initial={false}>
+          {expanded ? (
+            <motion.div key="all" layout {...fade} className="p-2">
+              <div className="flex items-center justify-between pb-1 pl-2">
+                <span className="kicker">all reactions</span>
+                <button
+                  type="button"
+                  onClick={() => setExpanded(false)}
+                  aria-label="Fewer reactions"
+                  aria-expanded
+                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
+                >
+                  <ChevronIcon down />
+                </button>
+              </div>
+              <div
+                className="grid max-h-[228px] overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,black_86%,transparent)] [scrollbar-width:none]"
+                style={{ gridTemplateColumns: `repeat(7, ${EMOJI_PX}px)` }}
+              >
+                {ALL_EMOJI.map(emojiButton)}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div key="quick" layout {...fade} className="flex items-center gap-1 px-2 py-1.5">
+              {REACTIONS.map(emojiButton)}
+              <button
+                type="button"
+                onClick={() => setExpanded(true)}
+                aria-label="More reactions"
+                aria-expanded={false}
+                className="ml-0.5 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
+              >
+                <ChevronIcon />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* The held emoji, lifted out of the clipped grid so it can outgrow it. */}
+      {held && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute z-10"
+          style={{ left: held.cx, top: held.cy }}
+        >
+          <motion.span
+            className="absolute flex select-none items-center justify-center text-[20px] drop-shadow-[0_6px_18px_rgba(0,0,0,0.55)]"
+            style={{ width: EMOJI_PX, height: EMOJI_PX, left: -EMOJI_PX / 2, top: -EMOJI_PX / 2, scale }}
+            animate={
+              maxed && !reduceMotion
+                ? { rotate: [0, -10, 9, -7, 6, 0], x: [0, -2.5, 2.5, -2, 2, 0] }
+                : { rotate: 0, x: 0 }
+            }
+            transition={maxed ? { duration: 0.42, repeat: Infinity, ease: 'easeInOut' } : { duration: 0.15 }}
+          >
+            {held.emoji}
+          </motion.span>
+          {count > 1 && (
+            <motion.span
+              className={`absolute -translate-x-1/2 whitespace-nowrap rounded-full border px-2 py-0.5 font-mono text-[10.5px] tabular-nums backdrop-blur-md ${
+                maxed ? 'border-gold bg-gold/20 text-gold-hi' : 'border-foreground/15 bg-stage/80 text-foreground'
+              }`}
+              style={{ y: badgeY, top: -10 }}
+            >
+              ×{count}
+              {maxed && ' max'}
+            </motion.span>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function ChevronIcon({ down = false }: { down?: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      style={{ transform: down ? 'rotate(180deg)' : undefined }}
+    >
+      <path d="M6 15l6-6 6 6" />
+    </svg>
+  );
+}
+
+const HOLD_REASONS = ['one sec', 'getting snacks', 'bathroom break', 'phone call'];
+
+/**
+ * Pause for both of you, with a reason they will see. An ordinary pause
+ * underneath, so it syncs like any other; the reason rides along in chat.
+ */
+function HoldPopover({ onDone }: { onDone: () => void }) {
+  const holdOn = useRuya((s) => s.holdOn);
+  const [custom, setCustom] = useState('');
+  const hold = (reason: string) => {
+    holdOn(reason);
+    onDone();
+  };
+  return (
+    <motion.div
+      {...popIn}
+      role="dialog"
+      aria-label="Hold on"
+      className="absolute bottom-[calc(100%+18px)] right-[-8px] z-[8] w-[min(250px,calc(100vw-32px))] rounded border border-foreground/15 bg-[rgba(25,23,21,0.96)] px-4 py-3.5 text-left backdrop-blur-md"
+    >
+      <p className="kicker mb-2">hold on</p>
+      <ul className="mb-3">
+        {HOLD_REASONS.map((r) => (
+          <li key={r}>
+            <button
+              type="button"
+              onClick={() => hold(r)}
+              className="w-full cursor-pointer border-0 bg-transparent px-0 py-[5px] text-left font-serif text-[13.5px] text-muted transition-colors duration-200 hover:text-gold-hi"
+            >
+              {r}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          hold(custom || 'hold on');
+        }}
+      >
+        <input
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          placeholder="or say why"
+          maxLength={60}
+          aria-label="Reason"
+          className="w-full border-0 border-b border-line-strong bg-transparent px-0.5 py-[7px] font-serif text-[13px] text-foreground caret-gold-hi outline-none transition-colors duration-500 focus:border-gold-hi"
+        />
+      </form>
+    </motion.div>
+  );
+}
+
+function ReactIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.5 14c.9 1.3 2.1 2 3.5 2s2.6-.7 3.5-2" />
+      <path d="M9.2 9.6h.01M14.8 9.6h.01" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function HoldIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+      <path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11" />
+      <path d="M11 10.5V5a1.5 1.5 0 0 1 3 0v5.5" />
+      <path d="M14 10.5V6.5a1.5 1.5 0 0 1 3 0V14a6 6 0 0 1-6 6h-.5a6 6 0 0 1-4.9-2.6L4 14.5a1.5 1.5 0 0 1 2.4-1.8L8 14.5V12" />
     </svg>
   );
 }

@@ -10,8 +10,17 @@
  * All of this is local, like volume: each person hears their own language.
  */
 
-import { AbortedError, extractAudioTrack } from './extractAudio';
-import { browserPlays, primaryLanguage, probeAudioTracks, type ProbedAudioTrack } from './probe';
+import { getCached, putCached } from './extractCache';
+import { AbortedError, audioSlot, extractAudioTrack, extractSubtitleTracks } from './extractAudio';
+import {
+  browserPlays,
+  isTextSubtitle,
+  primaryLanguage,
+  probeTracks,
+  type ProbedAudioTrack,
+  type ProbedSubtitleTrack,
+  type ProbedTracks,
+} from './probe';
 
 const PREFERRED_LANGUAGE_KEY = 'ruya.audioLanguage';
 const DEFAULT_LANGUAGE = 'en';
@@ -91,16 +100,18 @@ interface Job {
 }
 
 const jobs = new Map<string, Job>();
-const probes = new WeakMap<File, Promise<ProbedAudioTrack[]>>();
+const probes = new WeakMap<File, Promise<ProbedTracks>>();
 
 function keyOf(file: File, index: number) {
   return `${file.name}\0${file.size}\0${file.lastModified}\0${index}`;
 }
 
-export function probeCached(file: File): Promise<ProbedAudioTrack[]> {
+const NO_TRACKS: ProbedTracks = { audio: [], subtitles: [] };
+
+export function probeCached(file: File): Promise<ProbedTracks> {
   let p = probes.get(file);
   if (!p) {
-    p = probeAudioTracks(file).catch(() => []);
+    p = probeTracks(file).catch(() => NO_TRACKS);
     probes.set(file, p);
   }
   return p;
@@ -132,17 +143,25 @@ function prepareTrack(file: File, track: ProbedAudioTrack, durationSec: number):
     url: null,
     promise: Promise.resolve(''),
   };
-  job.promise = extractAudioTrack(
-    file,
-    track.index,
-    track.codec,
-    (seconds) => {
-      if (job.durationSec <= 0) return;
-      job.progress = Math.min(1, Math.max(0, seconds / job.durationSec));
-      for (const fn of job.listeners) fn();
-    },
-    abort.signal,
-  ).then(
+  const { slot, type } = audioSlot(track.index, track.codec);
+  job.promise = (async () => {
+    // Already pulled out in an earlier session: no ffmpeg at all.
+    const cached = await getCached(file, slot, type);
+    if (cached) return cached;
+    const blob = await extractAudioTrack(
+      file,
+      track.index,
+      track.codec,
+      (seconds) => {
+        if (job.durationSec <= 0) return;
+        job.progress = Math.min(1, Math.max(0, seconds / job.durationSec));
+        for (const fn of job.listeners) fn();
+      },
+      abort.signal,
+    );
+    void putCached(file, slot, blob);
+    return blob;
+  })().then(
     (blob) => {
       job.url = URL.createObjectURL(blob);
       return job.url;
@@ -162,7 +181,7 @@ function prepareTrack(file: File, track: ProbedAudioTrack, durationSec: number):
  */
 export async function prefetchPreferredAudio(file: File, durationSec: number): Promise<void> {
   if (nativeAudioSwitching()) return;
-  const tracks = await probeCached(file);
+  const tracks = (await probeCached(file)).audio;
   const target = initialTrack(tracks);
   if (target && (target.index !== 0 || !browserPlays(target.codec))) {
     prepareTrack(file, target, durationSec).promise.catch(() => {});
@@ -180,6 +199,82 @@ function initialTrack(tracks: ProbedAudioTrack[]): ProbedAudioTrack | null {
   );
 }
 
+// -------------------------------------------------------------- subtitles
+
+export interface EmbeddedSubtitle {
+  track: ProbedSubtitleTrack;
+  vtt: string;
+}
+
+interface SubtitleJob {
+  promise: Promise<EmbeddedSubtitle[]>;
+  /** 0..1 while ffmpeg runs; 1 when done or served from the cache. */
+  progress: number;
+  abort: AbortController;
+  listeners: Set<() => void>;
+}
+
+const subtitleJobs = new Map<string, SubtitleJob>();
+
+/**
+ * Every text subtitle track in the file as WebVTT, read in a single pass and
+ * cached per track. Image subtitles (PGS, VobSub) are left out: they are
+ * pictures, and there is no text to show.
+ */
+export function prepareSubtitles(file: File, durationOf: () => number): SubtitleJob {
+  const key = keyOf(file, -1);
+  const existing = subtitleJobs.get(key);
+  if (existing) return existing;
+
+  const abort = new AbortController();
+  const job: SubtitleJob = {
+    progress: 0,
+    abort,
+    listeners: new Set(),
+    promise: Promise.resolve([]),
+  };
+  const tell = (f: number) => {
+    job.progress = f;
+    for (const fn of job.listeners) fn();
+  };
+  job.promise = (async () => {
+    const text = (await probeCached(file)).subtitles.filter((t) => isTextSubtitle(t.codec));
+    if (!text.length) {
+      tell(1);
+      return [];
+    }
+    const slot = (t: ProbedSubtitleTrack) => `subs-${t.index}.vtt`;
+    const found = await Promise.all(text.map((t) => getCached(file, slot(t), 'text/vtt')));
+    const missing = text.filter((_, i) => !found[i]);
+    const fresh = missing.length
+      ? await extractSubtitleTracks(
+          file,
+          missing.map((t) => t.index),
+          (seconds) => {
+            const d = durationOf();
+            if (d > 0) tell(Math.min(1, seconds / d));
+          },
+          abort.signal,
+        )
+      : new Map<number, string>();
+    for (const t of missing) {
+      const vtt = fresh.get(t.index);
+      if (vtt) void putCached(file, slot(t), new Blob([vtt], { type: 'text/vtt' }));
+    }
+    tell(1);
+    const out: EmbeddedSubtitle[] = [];
+    for (let i = 0; i < text.length; i++) {
+      const vtt = found[i] ? await found[i]!.text() : fresh.get(text[i].index);
+      // An empty WebVTT is only its header; nothing worth listing.
+      if (vtt && vtt.replace(/^WEBVTT[^\n]*\n*/, '').trim()) out.push({ track: text[i], vtt });
+    }
+    return out;
+  })();
+  job.promise.catch(() => subtitleJobs.delete(key));
+  subtitleJobs.set(key, job);
+  return job;
+}
+
 /** Drop everything extracted for a file that is no longer in use. */
 export function releaseFile(file: File): void {
   const prefix = keyOf(file, -1).slice(0, -2);
@@ -189,6 +284,9 @@ export function releaseFile(file: File): void {
     if (j.url) URL.revokeObjectURL(j.url);
     jobs.delete(k);
   }
+  const subs = subtitleJobs.get(keyOf(file, -1));
+  subs?.abort.abort();
+  subtitleJobs.delete(keyOf(file, -1));
 }
 
 // --------------------------------------------------------------- follower
@@ -311,7 +409,7 @@ export class AudioTrackController {
   }
 
   private async init() {
-    const tracks = await probeCached(this.file);
+    const tracks = (await probeCached(this.file)).audio;
     if (this.disposed) return;
     this.tracks = tracks;
     if (!tracks.length) return;

@@ -37,9 +37,31 @@ export type SyncMessage =
   // estimate then degrades to the three-stamp form it always used.
   | { type: 'pong'; t0: number; t1: number; t2?: number }
   // `at` is epoch ms like every other stamp here. `position` is the sender's
-  // film time when they sent it, so each side can show the moment it was said.
-  // Optional and additive: the relay forwards chat verbatim and never reads it.
-  | { type: 'chat'; userId: string; text: string; at: number; position?: number };
+  // film time when they started typing, so each side can show the moment it
+  // was about. Everything after `at` is optional and additive: the relay
+  // forwards chat verbatim and never reads it, and it rejects unknown types,
+  // so reactions, typing and holds ride on chat as a `kind` rather than
+  // needing a relay upgrade. An older client drops a `typing` (empty text) and
+  // shows the others as ordinary lines.
+  | {
+      type: 'chat';
+      userId: string;
+      text: string;
+      at: number;
+      position?: number;
+      /** Stable across both sides, so a reply can point at it. */
+      id?: string;
+      /** The id of the line this answers. */
+      replyTo?: string;
+      /** A short copy of that line, for when the receiver never saw it. */
+      quote?: string;
+      kind?: ChatKind;
+      /** A held reaction: how many copies to float. Absent means one. */
+      count?: number;
+    };
+
+/** What a `chat` frame carries. Absent means an ordinary line. */
+export type ChatKind = 'text' | 'reaction' | 'typing' | 'hold';
 
 /**
  * Why a session could not proceed.

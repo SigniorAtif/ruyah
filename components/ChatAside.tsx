@@ -3,7 +3,7 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
-import { CHAT_MAX_CHARS, nameOf, useRuya } from '@/lib/store';
+import { CHAT_MAX_CHARS, getEngine, nameOf, useRuya, type ChatMessage } from '@/lib/store';
 
 /**
  * The aside beside the film. Open it is a narrow column of what was said, each
@@ -67,16 +67,28 @@ export function ChatAside() {
   );
 }
 
+/** A typing notice goes out at most this often while someone keeps typing. */
+const TYPING_EVERY_MS = 2_500;
+
 function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   const roomCode = useRuya((s) => s.roomCode);
   const me = useRuya((s) => s.displayName);
   const peerUserId = useRuya((s) => s.peerUserId);
   const messages = useRuya((s) => s.messages);
   const landed = useRuya((s) => s.chatLanded);
+  const peerTyping = useRuya((s) => s.peerTyping);
   const position = useRuya((s) => s.status?.position ?? 0);
   const sendChat = useRuya((s) => s.sendChat);
+  const sendTyping = useRuya((s) => s.sendTyping);
   const [draft, setDraft] = useState('');
+  // The film time when this line was started. A line is about the moment the
+  // person began writing it, not the moment they finished.
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const lastTypingSent = useRef(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const them = nameOf(peerUserId);
 
   // Keep the newest line in view as they arrive. A layout effect, so the list
@@ -84,13 +96,44 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   useLayoutEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages.length]);
+  }, [messages.length, peerTyping]);
+
+  const onDraft = (value: string) => {
+    setDraft(value);
+    if (!value.trim()) {
+      setStartedAt(null);
+      return;
+    }
+    if (startedAt === null) setStartedAt(getEngine()?.getStatus().position ?? position);
+    const now = performance.now();
+    if (now - lastTypingSent.current > TYPING_EVERY_MS) {
+      lastTypingSent.current = now;
+      sendTyping();
+    }
+  };
 
   const canSend = draft.trim().length > 0;
   const send = () => {
     if (!canSend) return;
-    sendChat(draft);
+    sendChat(draft, { position: startedAt ?? undefined, replyTo: replyTo?.wireId });
     setDraft('');
+    setStartedAt(null);
+    setReplyTo(null);
+    lastTypingSent.current = 0;
+  };
+
+  const startReply = (m: ChatMessage) => {
+    setReplyTo(m);
+    inputRef.current?.focus();
+  };
+
+  /** Scroll to the line a reply points at and flash it, if it is still here. */
+  const showOriginal = (wire: string) => {
+    const el = listRef.current?.querySelector<HTMLElement>(`[data-wire="${wire}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setFlashId(wire);
+    setTimeout(() => setFlashId((f) => (f === wire ? null : f)), 1_200);
   };
 
   return (
@@ -149,10 +192,12 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
           </p>
         )}
         {messages.map((m) => {
+          if (m.hold) return <HoldLine key={m.id} m={m} them={them} />;
           const flewIn = landed.includes(m.id);
           return (
             <motion.div
               key={flewIn ? `${m.id}-landed` : m.id}
+              data-wire={m.wireId}
               // Shares its layoutId with the toast it came from, so Motion morphs
               // one into the other. The CSS entrance would fight that transform.
               layoutId={flewIn ? chatLayoutId(m.id) : undefined}
@@ -160,28 +205,40 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
               // nothing to crossfade with.
               layoutCrossfade={false}
               transition={HANDOFF_SPRING}
-              className={`max-w-[88%] rounded border px-[13px] py-2.5 ${
+              className={`group relative max-w-[88%] rounded border px-[13px] py-2.5 transition-[background-color] duration-700 ${
                 flewIn ? '' : '[animation:ry-bubble_.45s_cubic-bezier(.2,.8,.2,1)_both]'
               } ${
                 m.mine
                   ? 'self-end border-foreground/15'
                   : 'self-start border-gold/30 border-l-2 border-l-gold/75'
-              }`}
+              } ${flashId === m.wireId ? 'bg-gold/15' : 'bg-transparent'}`}
             >
               {/* `layout` on the contents undoes the parent's scale in flight, so
                   the text keeps its shape while the box morphs from toast to line. */}
               <motion.div
                 layout={flewIn}
                 transition={HANDOFF_SPRING}
-                className="mb-[7px] flex justify-between gap-3.5 font-mono text-[9px] uppercase tracking-[0.17em]"
+                className="mb-[7px] flex items-center justify-between gap-3.5 font-mono text-[9px] uppercase tracking-[0.17em]"
               >
                 <span className={m.mine ? 'text-muted' : 'text-gold-hi'}>
                   {m.mine ? 'you' : them}
                 </span>
-                {m.position !== null && (
-                  <span className="tabular-nums text-dim">{formatClock(m.position)}</span>
-                )}
+                {m.position !== null && <Stamp position={m.position} />}
               </motion.div>
+              {m.reply && (
+                <motion.button
+                  layout={flewIn}
+                  transition={HANDOFF_SPRING}
+                  type="button"
+                  onClick={() => showOriginal(m.reply!.wireId)}
+                  className="mb-2 block w-full cursor-pointer truncate rounded-sm border-0 border-l-2 border-l-foreground/25 bg-foreground/[0.04] px-2 py-1 text-left text-[12px] leading-[1.45] text-muted transition-colors duration-300 hover:text-foreground"
+                >
+                  <span className="mr-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
+                    {m.reply.mine ? 'you' : them}
+                  </span>
+                  {m.reply.text}
+                </motion.button>
+              )}
               <motion.p
                 layout={flewIn}
                 transition={HANDOFF_SPRING}
@@ -189,26 +246,81 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
               >
                 {m.text}
               </motion.p>
+              <button
+                type="button"
+                onClick={() => startReply(m)}
+                aria-label={`Reply to ${m.mine ? 'your' : `${them}'s`} message`}
+                className={`absolute top-1/2 flex h-6 w-6 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-foreground/15 bg-background text-faint opacity-0 transition-[opacity,color,border-color] duration-200 hover:border-gold hover:text-gold-hi focus-visible:opacity-100 group-hover:opacity-100 ${
+                  m.mine ? '-left-8' : '-right-8'
+                }`}
+              >
+                <ReplyIcon />
+              </button>
             </motion.div>
           );
         })}
+        <AnimatePresence>
+          {peerTyping && (
+            <motion.p
+              key="typing"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.25 }}
+              className="flex items-center gap-2 self-start font-mono text-[9.5px] uppercase tracking-[0.16em] text-faint"
+            >
+              <TypingDots />
+              {them} is typing
+            </motion.p>
+          )}
+        </AnimatePresence>
       </motion.div>
 
       <div className="flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
+        <AnimatePresence initial={false}>
+          {replyTo && (
+            <motion.div
+              key="reply"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: 'auto', opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ height: { type: 'spring', stiffness: 320, damping: 34 }, opacity: { duration: 0.2 } }}
+              className="overflow-hidden"
+            >
+              <div className="mb-3 flex items-center gap-2.5 border-l-2 border-l-gold pl-2.5">
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-kicker">
+                    replying to {replyTo.mine ? 'yourself' : them}
+                  </p>
+                  <p className="truncate text-[12.5px] text-muted">{replyTo.text}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setReplyTo(null)}
+                  aria-label="Cancel reply"
+                  className="flex-none cursor-pointer border-0 bg-transparent p-1 font-mono text-[13px] text-faint transition-colors duration-300 hover:text-foreground"
+                >
+                  ×
+                </button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
         <div className="flex items-end gap-3">
           <input
+            ref={inputRef}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => onDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
                 send();
               }
             }}
-            placeholder="Say something"
+            placeholder={replyTo ? 'Reply' : 'Say something'}
             maxLength={CHAT_MAX_CHARS}
             aria-label="Message"
-            className="min-w-0 flex-1 border-0 border-b border-line-strong bg-transparent px-0.5 py-[9px] font-serif text-[14.5px] text-foreground transition-colors duration-[350ms] focus:border-gold"
+            className="min-w-0 flex-1 border-0 border-b border-line-strong bg-transparent px-0.5 py-[9px] font-serif text-[14.5px] text-foreground caret-gold-hi outline-none transition-colors duration-500 focus:border-gold-hi"
           />
           <button
             type="button"
@@ -222,11 +334,74 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
           </button>
         </div>
         <div className="mt-3 flex justify-between gap-3 font-mono text-[9.5px] uppercase tracking-[0.14em] text-dim">
-          <span className="tabular-nums">stamped {formatClock(position)}</span>
+          {/* Frozen once they start typing: that is the moment the line is about. */}
+          <span className={`tabular-nums transition-colors duration-300 ${startedAt !== null ? 'text-kicker' : ''}`}>
+            stamped {formatClock(startedAt ?? position)}
+          </span>
           <span>enter to send · c hides</span>
         </div>
       </div>
     </div>
+  );
+}
+
+/** A line's moment in the film. Clicking it takes both players there. */
+function Stamp({ position }: { position: number }) {
+  const showToast = useRuya((s) => s.showToast);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        getEngine()?.seek(position);
+        showToast(`Jump to ${formatClock(position)}`);
+      }}
+      title="Jump here"
+      aria-label={`Jump to ${formatClock(position)}`}
+      className="cursor-pointer border-0 bg-transparent p-0 font-mono tabular-nums tracking-[0.17em] text-dim underline decoration-transparent underline-offset-2 transition-colors duration-300 hover:text-gold-hi hover:decoration-gold/60"
+    >
+      {formatClock(position)}
+    </button>
+  );
+}
+
+/** A hold-on pause, as a note across the log rather than a bubble. */
+function HoldLine({ m, them }: { m: ChatMessage; them: string }) {
+  return (
+    <div
+      data-wire={m.wireId}
+      className="flex items-center gap-3 self-stretch font-mono text-[9.5px] uppercase tracking-[0.16em] text-warn [animation:ry-in-soft_.4s_ease_both]"
+    >
+      <span className="h-px flex-1 bg-warn/30" />
+      <span className="max-w-[75%] truncate normal-case tracking-normal">
+        <span className="uppercase tracking-[0.16em]">{m.mine ? 'you' : them} · hold on</span>
+        {m.text !== 'hold on' && <span className="font-serif text-[12px] italic"> — {m.text}</span>}
+      </span>
+      {m.position !== null && <Stamp position={m.position} />}
+      <span className="h-px flex-1 bg-warn/30" />
+    </div>
+  );
+}
+
+function TypingDots() {
+  return (
+    <span aria-hidden className="flex gap-[3px]">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className="h-[4px] w-[4px] rounded-full bg-gold-hi/70 [animation:ry-pulse_1.1s_ease-in-out_infinite]"
+          style={{ animationDelay: `${i * 0.15}s` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function ReplyIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+      <path d="M9 14L4 9l5-5" />
+      <path d="M4 9h11a5 5 0 0 1 5 5v6" />
+    </svg>
   );
 }
 

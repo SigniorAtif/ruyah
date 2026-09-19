@@ -4,9 +4,9 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
-import { ControlBar } from './ControlBar';
+import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
-import { SyncIndicator } from './SyncIndicator';
+import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
@@ -23,8 +23,9 @@ export function VideoPlayer({ code }: { code: string }) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
-  const [tracksOpen, setTracksOpen] = useState(false);
-  const [offsetOpen, setOffsetOpen] = useState(false);
+  // One panel at a time: opening any of them closes the rest.
+  const [panel, setPanel] = useState<PlayerPanel | null>(null);
+  const togglePanel = (p: PlayerPanel) => setPanel((v) => (v === p ? null : p));
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -43,9 +44,9 @@ export function VideoPlayer({ code }: { code: string }) {
     onToggleKeys: () => setKeysOpen((v) => !v),
     onEscape: () => {
       setKeysOpen(false);
-      setTracksOpen(false);
-      setOffsetOpen(false);
+      setPanel(null);
     },
+    onHold: () => togglePanel('hold'),
     onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
 
@@ -64,7 +65,10 @@ export function VideoPlayer({ code }: { code: string }) {
     const detach = engine.attach(video);
     // Plays the preferred audio language where the browser cannot switch itself.
     const file = useRuya.getState().file;
-    if (file) engine.useAudioFrom(file, (label) => useRuya.getState().showToast(`Audio · ${label}`));
+    if (file) {
+      engine.useAudioFrom(file, (label) => useRuya.getState().showToast(`Audio · ${label}`));
+      engine.useSubtitlesFrom(file);
+    }
     return detach;
   }, [objectUrl, ensureEngine]);
 
@@ -91,7 +95,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const mediaError = status?.mediaError ?? null;
   const blocked = connectionDown || !!mediaError;
   // Nobody wants the bar to vanish from under an open panel, or while paused.
-  const panelOpen = tracksOpen || offsetOpen;
+  const panelOpen = panel !== null;
   const barVisible = controlsVisible || keysOpen || panelOpen || blocked || !status?.playing;
 
   const chooseAnotherFile = () => {
@@ -121,8 +125,7 @@ export function VideoPlayer({ code }: { code: string }) {
             wake();
             // A click on the frame first dismisses an open panel, like Escape.
             if (panelOpen) {
-              setTracksOpen(false);
-              setOffsetOpen(false);
+              setPanel(null);
               return;
             }
             getEngine()?.togglePlay();
@@ -132,10 +135,6 @@ export function VideoPlayer({ code }: { code: string }) {
           playsInline
           // No `controls`: every action routes through PlayerEngine (§11).
         />
-
-        {/* Outside ControlBar on purpose: the sync state stays readable when the
-            bar has faded (rule 6). */}
-        <SyncIndicator />
 
         {sameEncode === false && !mismatchDismissed && (
           <div
@@ -162,7 +161,11 @@ export function VideoPlayer({ code }: { code: string }) {
 
         <Toast barVisible={barVisible} />
 
-        {offsetOpen && <OffsetPanel />}
+        {panel === 'offset' && <OffsetPanel />}
+
+        <FloatingReactions />
+        <HoldBanner />
+        <ResumePrompt />
 
         {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 
@@ -184,16 +187,9 @@ export function VideoPlayer({ code }: { code: string }) {
           containerRef={containerRef}
           showKeysHint={showKeysHint}
           onOpenKeys={() => setKeysOpen(true)}
-          tracksOpen={tracksOpen}
-          onToggleTracks={() => {
-            setTracksOpen((v) => !v);
-            setOffsetOpen(false);
-          }}
-          offsetOpen={offsetOpen}
-          onToggleOffset={() => {
-            setOffsetOpen((v) => !v);
-            setTracksOpen(false);
-          }}
+          panel={panel}
+          onTogglePanel={togglePanel}
+          onClosePanel={() => setPanel(null)}
         />
 
         <ChatToasts barVisible={barVisible} />
@@ -216,6 +212,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['F', 'fullscreen'],
   ['0 – 9', 'jump to 0–90%'],
   ['C', 'show / hide chat'],
+  ['H', 'hold on, for both'],
   ['?', 'this sheet'],
 ];
 

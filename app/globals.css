@@ -62,9 +62,15 @@ button:disabled {
 input::placeholder {
   color: var(--dim);
 }
-*:focus-visible {
-  outline: 2px solid var(--gold);
-  outline-offset: 3px;
+/*
+ * In the base layer so a utility can opt out: unlayered, this outranks every
+ * Tailwind utility and `outline-none` on the underlined fields did nothing.
+ */
+@layer base {
+  *:focus-visible {
+    outline: 2px solid var(--gold);
+    outline-offset: 3px;
+  }
 }
 ::selection {
   background: rgba(182, 130, 53, 0.32);

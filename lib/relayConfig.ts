@@ -22,6 +22,7 @@ export const DEFAULT_RELAY_URL = 'wss://your-relay.example.com/ws';
 
 const RELAY_URL_KEY = 'ruyah:relay-url';
 const DEV_FLAG_KEY = 'ruyah:dev';
+const DISPLAY_NAME_KEY = 'ruyah:display-name';
 
 /**
  * Failure reasons the lobby can explain (Phase 2 §3 plus the connection-level
@@ -128,6 +129,27 @@ export function saveRelayUrl(url: string): void {
   const next = url.trim();
   if (safeGet(RELAY_URL_KEY) === next) return;
   safeSet(RELAY_URL_KEY, next);
+  emit();
+}
+
+/**
+ * The name last used to enter a room, so the lobby can offer it again instead
+ * of asking every visit. Shares this store (and its cross-tab 'storage'
+ * subscription) with the relay URL: both are "who and where I was last time".
+ */
+export function loadDisplayName(): string {
+  if (typeof window === 'undefined') return '';
+  return safeGet(DISPLAY_NAME_KEY) ?? '';
+}
+
+export const getDisplayNameSnapshot = loadDisplayName;
+export const getDisplayNameServerSnapshot = (): string => '';
+
+export function saveDisplayName(name: string): void {
+  if (typeof window === 'undefined') return;
+  const next = name.trim();
+  if (next === '' || safeGet(DISPLAY_NAME_KEY) === next) return;
+  safeSet(DISPLAY_NAME_KEY, next);
   emit();
 }
 
