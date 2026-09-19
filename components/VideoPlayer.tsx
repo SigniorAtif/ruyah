@@ -64,7 +64,10 @@ export function VideoPlayer({ code }: { code: string }) {
     const detach = engine.attach(video);
     // Plays the preferred audio language where the browser cannot switch itself.
     const file = useRuya.getState().file;
-    if (file) engine.useAudioFrom(file, (label) => useRuya.getState().showToast(`Audio · ${label}`));
+    if (file) {
+      engine.useAudioFrom(file, (label) => useRuya.getState().showToast(`Audio · ${label}`));
+      engine.useSubtitlesFrom(file);
+    }
     return detach;
   }, [objectUrl, ensureEngine]);
 

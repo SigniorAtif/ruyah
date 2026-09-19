@@ -13,7 +13,7 @@
 import { create } from 'zustand';
 import { WebSocketTransport } from './sync/websocketTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
-import { prefetchPreferredAudio, releaseFile } from '@/lib/player/audioTracks';
+import { prefetchPreferredAudio, prepareSubtitles, releaseFile } from '@/lib/player/audioTracks';
 import { fingerprintFile } from './player/fingerprint';
 import type {
   SyncErrorCode,
@@ -437,7 +437,12 @@ export const useRuya = create<RuyaState>((set, get) => ({
     await meta;
     // Start pulling out the preferred audio language now, while the room waits,
     // so it is usually ready by the time the film starts.
-    if (!get().fileError) void prefetchPreferredAudio(file, get().duration);
+    if (!get().fileError) {
+      void prefetchPreferredAudio(file, get().duration);
+      // Likewise the subtitle text; the player picks the result up when it opens.
+      const duration = get().duration;
+      prepareSubtitles(file, () => duration).promise.catch(() => {});
+    }
 
     try {
       const fingerprint = await fingerprintFile(file);
