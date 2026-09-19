@@ -362,9 +362,14 @@ function TracksPanel({ onClose }: { onClose: () => void }) {
           e.target.value = '';
         }}
       />
+      {status.subtitlesPreparing !== null && (
+        <p className="mt-2 font-mono text-[10.5px] tabular-nums text-warn">
+          reading subtitles from the file · {Math.round(status.subtitlesPreparing * 100)}%
+        </p>
+      )}
       <p className="mt-1.5 text-[11.5px] leading-[1.5] text-faint">
-        Stays on this machine. Subtitles inside an .mkv are not readable by the browser; load them
-        as a separate file.
+        Stays on this machine. Text subtitles inside the file are read out on their own; picture
+        subtitles (PGS) cannot be shown.
       </p>
 
       <div className="my-4 h-px bg-line-soft" />
