@@ -1,15 +1,16 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
-import { OffsetPanel } from './PlayerPanels';
+import { DevPanel, OffsetPanel } from './PlayerPanels';
 import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
+import { getDevServerSnapshot, getDevSnapshot, subscribeConfig } from '@/lib/relayConfig';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
 
 const CONTROLS_IDLE_MS = 3_000;
@@ -27,6 +28,7 @@ export function VideoPlayer({ code }: { code: string }) {
   // One panel at a time: opening any of them closes the rest.
   const [panel, setPanel] = useState<PlayerPanel | null>(null);
   const togglePanel = (p: PlayerPanel) => setPanel((v) => (v === p ? null : p));
+  const devMode = useSyncExternalStore(subscribeConfig, getDevSnapshot, getDevServerSnapshot);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -167,6 +169,7 @@ export function VideoPlayer({ code }: { code: string }) {
         <Toast barVisible={barVisible} />
 
         {panel === 'offset' && <OffsetPanel />}
+        {panel === 'dev' && devMode && <DevPanel />}
 
         <FloatingReactions />
         <HoldBanner />
@@ -195,6 +198,7 @@ export function VideoPlayer({ code }: { code: string }) {
           panel={panel}
           onTogglePanel={togglePanel}
           onClosePanel={() => setPanel(null)}
+          showDev={devMode}
         />
 
         <ChatToasts barVisible={barVisible} />

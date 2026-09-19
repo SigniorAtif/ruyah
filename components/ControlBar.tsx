@@ -16,7 +16,7 @@ function fractionAt(e: ReactPointerEvent<HTMLElement>): number {
 }
 
 /** The popovers and panels the bar can open; only one is open at a time. */
-export type PlayerPanel = 'tracks' | 'offset' | 'react' | 'hold';
+export type PlayerPanel = 'tracks' | 'offset' | 'dev' | 'react' | 'hold';
 
 /**
  * §11 — every action here goes through PlayerEngine. Nothing in this file
@@ -31,6 +31,7 @@ export function ControlBar({
   panel,
   onTogglePanel,
   onClosePanel,
+  showDev,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
@@ -39,11 +40,13 @@ export function ControlBar({
   panel: PlayerPanel | null;
   onTogglePanel: (p: PlayerPanel) => void;
   onClosePanel: () => void;
+  showDev: boolean;
 }) {
   const tracksOpen = panel === 'tracks';
   const offsetOpen = panel === 'offset';
   const onToggleTracks = () => onTogglePanel('tracks');
   const onToggleOffset = () => onTogglePanel('offset');
+  const onToggleDev = () => onTogglePanel('dev');
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
   const chatOpen = useRuya((s) => s.chatOpen);
@@ -286,6 +289,15 @@ export function ControlBar({
                 </span>
               )}
             </button>
+            {showDev && (
+              <button
+                type="button"
+                onClick={onToggleDev}
+                className="cursor-pointer rounded border border-foreground/15 bg-transparent px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-faint transition-colors duration-300 hover:border-foreground/40 hover:text-foreground"
+              >
+                dev
+              </button>
+            )}
             <button
               type="button"
               onClick={onToggleOffset}
