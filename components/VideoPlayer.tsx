@@ -7,6 +7,7 @@ import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
 import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
+import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
@@ -135,6 +136,10 @@ export function VideoPlayer({ code }: { code: string }) {
           playsInline
           // No `controls`: every action routes through PlayerEngine (§11).
         />
+
+        {/* Outside ControlBar on purpose: the sync state stays readable when the
+            bar has faded (rule 6). */}
+        <SyncIndicator />
 
         {sameEncode === false && !mismatchDismissed && (
           <div
