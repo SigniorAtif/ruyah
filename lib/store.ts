@@ -21,7 +21,7 @@ import type {
   SyncTransport,
   TransportState,
 } from './sync/types';
-import { isDevMode, saveRelayUrl, validateRelayUrl } from './relayConfig';
+import { isDevMode, saveDisplayName, saveRelayUrl, validateRelayUrl } from './relayConfig';
 
 /** No I/O/0/1 — these get read aloud over the phone. */
 const ROOM_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -289,6 +289,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // Persisted so a second window opens against the same relay rather than
     // falling back to the default and never meeting the first.
     saveRelayUrl(trimmed);
+    // Remembered so the lobby does not ask for it again next visit.
+    saveDisplayName(displayName);
 
     const userId = sessionUserId(roomCode, displayName);
     // §7.2's authority is the server's to assign; the lobby's `isAuthority` is

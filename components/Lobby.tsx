@@ -15,6 +15,8 @@ import {
   applyDevFlagFromUrl,
   getDevServerSnapshot,
   getDevSnapshot,
+  getDisplayNameServerSnapshot,
+  getDisplayNameSnapshot,
   getRelayUrlServerSnapshot,
   getRelayUrlSnapshot,
   subscribeConfig,
@@ -33,7 +35,7 @@ interface LobbyError {
 
 export function Lobby() {
   const router = useRouter();
-  const [name, setName] = useState('');
+  const [draftName, setDraftName] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [advanced, setAdvanced] = useState(false);
@@ -57,6 +59,14 @@ export function Lobby() {
   // whatever is stored, including a change made in another tab.
   const [draftRelayUrl, setDraftRelayUrl] = useState<string | null>(null);
   const relayUrl = draftRelayUrl ?? storedRelayUrl;
+
+  // Same shape for the name: prefilled from the last visit, draft once typed.
+  const storedName = useSyncExternalStore(
+    subscribeConfig,
+    getDisplayNameSnapshot,
+    getDisplayNameServerSnapshot,
+  );
+  const name = draftName ?? storedName;
 
   const roomCode = useRuya((s) => s.roomCode);
   const startSession = useRuya((s) => s.startSession);
@@ -158,7 +168,7 @@ export function Lobby() {
               id="name"
               value={name}
               onChange={(e) => {
-                setName(e.target.value);
+                setDraftName(e.target.value);
                 setLocalError(null);
               }}
               placeholder=""
