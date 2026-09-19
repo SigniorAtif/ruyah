@@ -309,7 +309,7 @@ export class PlayerEngine {
 
     // Dev-only console handle, so a peer-lost that has already latched can be
     // read out after the fact instead of needing to be caught live.
-    if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+    if (__RUYAH_DEV_TOOLS__ && typeof window !== 'undefined') {
       (window as unknown as { __ruyah?: unknown }).__ruyah = {
         dropoutReport: () => this.dropoutReport(),
         engine: this,
@@ -841,7 +841,7 @@ export class PlayerEngine {
   /** Dev-panel affordance for acceptance tests 4 and 5: fake decoder drift. */
   debugInjectDrift(seconds: number): void {
     const v = this.video;
-    if (!v) return;
+    if (!__RUYAH_DEV_TOOLS__ || !v) return;
     // Deliberately local and unbroadcast — this simulates the decoders
     // separating, not a user seek. No cooldown either, so the very next
     // heartbeat sees it.
@@ -1394,6 +1394,7 @@ export class PlayerEngine {
    * feature detection, so SyncTransport stays exactly as §10 defines it.
    */
   private recordDropoutEvent(event: string, extra: Record<string, unknown>): void {
+    if (!__RUYAH_DEV_TOOLS__) return;
     const doc = typeof document !== 'undefined' ? document : null;
     const transport = this.transport as { debugInfo?: () => Record<string, unknown> };
     const fields: Record<string, unknown> = {
@@ -1414,7 +1415,7 @@ export class PlayerEngine {
     const line = `[ruyah §8] ${new Date().toISOString()} ${JSON.stringify(fields)}`;
     this.dropoutLog.push(line);
     if (this.dropoutLog.length > 60) this.dropoutLog.shift();
-    if (process.env.NODE_ENV !== 'production') console.warn(line);
+    console.warn(line);
   }
 
   /**
