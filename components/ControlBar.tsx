@@ -7,6 +7,7 @@ import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
 import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
 import { ALL_EMOJI, MAX_BURST } from '@/lib/emoji';
 import { getEngine, REACTIONS, useRuya } from '@/lib/store';
+import { MomentMarks } from './MomentMarks';
 import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
 /** Fraction of an element's width under the pointer, clamped to 0..1. */
@@ -132,6 +133,8 @@ export function ControlBar({
             seek pending sync
           </div>
         )}
+
+        <MomentMarks duration={duration} />
 
         <div
           role="slider"
