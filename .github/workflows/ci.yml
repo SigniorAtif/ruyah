@@ -39,7 +39,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Assert the dev surface is absent
         run: |
-          pattern='DevPanel|MockTransport|SimulatedTransport|NetworkConditions|isSimulatedTransport|legDelayMs|__ruyah|dropoutReport|recordDropoutEvent|debugInjectDrift|setNetwork'
+          pattern='DevPanel|MockTransport|SimulatedTransport|NetworkConditions|isSimulatedTransport|legDelayMs|__ruyah|dropoutReport|recordDropoutEvent|debugInjectDrift|setNetwork|SyncIndicator|showDev'
           if git grep -nE "$pattern" -- ':!docs' ':!.github'; then
             echo
             echo "::error::Dev-only code reached a branch bound for main."
