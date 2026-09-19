@@ -183,7 +183,9 @@ export function validateRelayUrl(raw: string, devMode = isDevMode()): RelayUrlCh
       ok: false,
       url,
       error: 'empty',
-      message: 'Enter the address of a relay to connect to.',
+      message: devMode
+        ? 'Empty uses the built-in mock transport (dev mode).'
+        : 'Enter the address of a relay to connect to.',
     };
   }
 

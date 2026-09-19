@@ -7,6 +7,7 @@ import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { DevPanel, OffsetPanel } from './PlayerPanels';
 import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
+import { DevPanel as NetworkPanel } from './DevPanel';
 import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
@@ -170,6 +171,8 @@ export function VideoPlayer({ code }: { code: string }) {
 
         {panel === 'offset' && <OffsetPanel />}
         {panel === 'dev' && devMode && <DevPanel />}
+        {/* The network simulator; renders only over the mock transport. */}
+        <NetworkPanel />
 
         <FloatingReactions />
         <HoldBanner />
