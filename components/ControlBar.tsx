@@ -4,7 +4,8 @@ import { useRef, useState, type PointerEvent as ReactPointerEvent, type RefObjec
 import type { MediaTrack } from '@/lib/player/engine';
 import { formatClock } from '@/lib/player/fingerprint';
 import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
-import { getEngine, useRuya } from '@/lib/store';
+import { AnimatePresence, motion } from 'motion/react';
+import { getEngine, REACTIONS, useRuya } from '@/lib/store';
 import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
 /** Fraction of an element's width under the pointer, clamped to 0..1. */
@@ -12,6 +13,9 @@ function fractionAt(e: ReactPointerEvent<HTMLElement>): number {
   const r = e.currentTarget.getBoundingClientRect();
   return r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0;
 }
+
+/** The popovers and panels the bar can open; only one is open at a time. */
+export type PlayerPanel = 'tracks' | 'offset' | 'react' | 'hold';
 
 /**
  * §11 — every action here goes through PlayerEngine. Nothing in this file
@@ -23,20 +27,22 @@ export function ControlBar({
   containerRef,
   showKeysHint,
   onOpenKeys,
-  tracksOpen,
-  onToggleTracks,
-  offsetOpen,
-  onToggleOffset,
+  panel,
+  onTogglePanel,
+  onClosePanel,
 }: {
   visible: boolean;
   containerRef: RefObject<HTMLDivElement | null>;
   showKeysHint: boolean;
   onOpenKeys: () => void;
-  tracksOpen: boolean;
-  onToggleTracks: () => void;
-  offsetOpen: boolean;
-  onToggleOffset: () => void;
+  panel: PlayerPanel | null;
+  onTogglePanel: (p: PlayerPanel) => void;
+  onClosePanel: () => void;
 }) {
+  const tracksOpen = panel === 'tracks';
+  const offsetOpen = panel === 'offset';
+  const onToggleTracks = () => onTogglePanel('tracks');
+  const onToggleOffset = () => onTogglePanel('offset');
   const status = useRuya((s) => s.status);
   const showToast = useRuya((s) => s.showToast);
   const chatOpen = useRuya((s) => s.chatOpen);
@@ -207,6 +213,39 @@ export function ControlBar({
           </div>
 
           <div className="ml-auto flex items-center gap-[clamp(10px,1.6vw,18px)]">
+            <div className="relative flex">
+              <AnimatePresence>
+                {panel === 'hold' && <HoldPopover key="hold" onDone={onClosePanel} />}
+              </AnimatePresence>
+              <button
+                type="button"
+                onClick={() => onTogglePanel('hold')}
+                aria-label="Hold on"
+                aria-expanded={panel === 'hold'}
+                title="Hold on (H)"
+                className={`flex cursor-pointer border-0 bg-transparent p-0 transition-[color,transform] duration-250 hover:text-gold-hi active:scale-90 ${
+                  panel === 'hold' ? 'text-gold-hi' : ''
+                }`}
+              >
+                <HoldIcon />
+              </button>
+            </div>
+            <div className="relative flex">
+              <AnimatePresence>
+                {panel === 'react' && <ReactPopover key="react" onDone={onClosePanel} />}
+              </AnimatePresence>
+              <button
+                type="button"
+                onClick={() => onTogglePanel('react')}
+                aria-label="React"
+                aria-expanded={panel === 'react'}
+                className={`flex cursor-pointer border-0 bg-transparent p-0 transition-[color,transform] duration-250 hover:text-gold-hi active:scale-90 ${
+                  panel === 'react' ? 'text-gold-hi' : ''
+                }`}
+              >
+                <ReactIcon />
+              </button>
+            </div>
             <div className="relative flex">
               {tracksOpen && <TracksPanel onClose={onToggleTracks} />}
               <button
@@ -453,6 +492,115 @@ function SubtitlesIcon() {
       <path d="M12.5 14h5" />
       <path d="M6.5 11h7" />
       <path d="M15.5 11h2" />
+    </svg>
+  );
+}
+
+const popIn = {
+  initial: { opacity: 0, y: 10, scale: 0.96 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, y: 6, scale: 0.98 },
+  transition: { type: 'spring', stiffness: 420, damping: 30 },
+} as const;
+
+/** Six reactions in a pill above the button. They float over both screens. */
+function ReactPopover({ onDone }: { onDone: () => void }) {
+  const sendReaction = useRuya((s) => s.sendReaction);
+  return (
+    <motion.div
+      {...popIn}
+      role="menu"
+      aria-label="Reactions"
+      className="absolute bottom-[calc(100%+16px)] left-1/2 z-[8] flex gap-1 rounded-full border border-foreground/15 bg-[rgba(25,23,21,0.96)] px-2 py-1.5 backdrop-blur-md"
+      style={{ x: '-50%' }}
+    >
+      {REACTIONS.map((emoji) => (
+        <button
+          key={emoji}
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            sendReaction(emoji);
+            onDone();
+          }}
+          className="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-[20px] transition-[background-color,transform] duration-200 hover:scale-125 hover:bg-foreground/10 active:scale-95"
+        >
+          {emoji}
+        </button>
+      ))}
+    </motion.div>
+  );
+}
+
+const HOLD_REASONS = ['one sec', 'getting snacks', 'bathroom break', 'phone call'];
+
+/**
+ * Pause for both of you, with a reason they will see. An ordinary pause
+ * underneath, so it syncs like any other; the reason rides along in chat.
+ */
+function HoldPopover({ onDone }: { onDone: () => void }) {
+  const holdOn = useRuya((s) => s.holdOn);
+  const [custom, setCustom] = useState('');
+  const hold = (reason: string) => {
+    holdOn(reason);
+    onDone();
+  };
+  return (
+    <motion.div
+      {...popIn}
+      role="dialog"
+      aria-label="Hold on"
+      className="absolute bottom-[calc(100%+18px)] right-[-8px] z-[8] w-[min(250px,calc(100vw-32px))] rounded border border-foreground/15 bg-[rgba(25,23,21,0.96)] px-4 py-3.5 text-left backdrop-blur-md"
+    >
+      <p className="kicker mb-2">hold on</p>
+      <ul className="mb-3">
+        {HOLD_REASONS.map((r) => (
+          <li key={r}>
+            <button
+              type="button"
+              onClick={() => hold(r)}
+              className="w-full cursor-pointer border-0 bg-transparent px-0 py-[5px] text-left font-serif text-[13.5px] text-muted transition-colors duration-200 hover:text-gold-hi"
+            >
+              {r}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          hold(custom || 'hold on');
+        }}
+      >
+        <input
+          value={custom}
+          onChange={(e) => setCustom(e.target.value)}
+          placeholder="or say why"
+          maxLength={60}
+          aria-label="Reason"
+          className="w-full border-0 border-b border-line-strong bg-transparent px-0.5 py-[7px] font-serif text-[13px] text-foreground caret-gold-hi outline-none transition-colors duration-500 focus:border-gold-hi"
+        />
+      </form>
+    </motion.div>
+  );
+}
+
+function ReactIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M8.5 14c.9 1.3 2.1 2 3.5 2s2.6-.7 3.5-2" />
+      <path d="M9.2 9.6h.01M14.8 9.6h.01" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function HoldIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+      <path d="M8 12V6.5a1.5 1.5 0 0 1 3 0V11" />
+      <path d="M11 10.5V5a1.5 1.5 0 0 1 3 0v5.5" />
+      <path d="M14 10.5V6.5a1.5 1.5 0 0 1 3 0V14a6 6 0 0 1-6 6h-.5a6 6 0 0 1-4.9-2.6L4 14.5a1.5 1.5 0 0 1 2.4-1.8L8 14.5V12" />
     </svg>
   );
 }
