@@ -59,6 +59,8 @@ export interface ShortcutHandlers {
   onEscape?: () => void;
   /** `c` — show or hide the chat aside. */
   onToggleChat?: () => void;
+  /** `h` — the hold-on picker. */
+  onHold?: () => void;
 }
 
 export function useKeyboardShortcuts(
@@ -157,6 +159,11 @@ export function useKeyboardShortcuts(
         case 'c':
         case 'C':
           handlersRef.current.onToggleChat?.();
+          return;
+
+        case 'h':
+        case 'H':
+          handlersRef.current.onHold?.();
           return;
 
         case 's':
