@@ -17,7 +17,7 @@ import { getEngine, useRuya } from '@/lib/store';
  * this client's decoder only and broadcast nothing, which is exactly what real
  * drift looks like.
  */
-export function DevPanel() {
+export function NetworkPanel() {
   const [open, setOpen] = useState(false);
   const network = useRuya((s) => s.network);
   const setNetwork = useRuya((s) => s.setNetwork);

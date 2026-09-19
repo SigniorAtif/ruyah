@@ -88,6 +88,8 @@ export function subscribeConfig(onChange: () => void): () => void {
  * Runtime, not `NODE_ENV`: a static export bakes NODE_ENV in at build, which is
  * exactly the build-time coupling this module exists to remove. Set it by
  * visiting the app once with `?dev=1`; it sticks until cleared with `?dev=0`.
+ * It allows a loopback relay in any build; the dev tools themselves exist only
+ * in builds that carry them (lib/devTools.d.ts).
  */
 export function isDevMode(): boolean {
   if (typeof window === 'undefined') return false;
@@ -183,9 +185,10 @@ export function validateRelayUrl(raw: string, devMode = isDevMode()): RelayUrlCh
       ok: false,
       url,
       error: 'empty',
-      message: devMode
-        ? 'Empty uses the built-in mock transport (dev mode).'
-        : 'Enter the address of a relay to connect to.',
+      message:
+        __RUYAH_DEV_TOOLS__ && devMode
+          ? 'Empty uses the built-in mock transport (dev mode).'
+          : 'Enter the address of a relay to connect to.',
     };
   }
 
