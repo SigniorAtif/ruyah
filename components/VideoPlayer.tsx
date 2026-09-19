@@ -6,7 +6,7 @@ import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
-import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
+import { FloatingReactions, HoldBanner, ResumePrompt, TogetherMoment } from './StageNotes';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { InstrumentsPanel } from './dev/InstrumentsPanel';
@@ -178,6 +178,7 @@ export function VideoPlayer({ code }: { code: string }) {
         {__RUYAH_DEV_TOOLS__ && <NetworkPanel />}
 
         <FloatingReactions />
+        <TogetherMoment />
         <HoldBanner />
         <ResumePrompt />
 

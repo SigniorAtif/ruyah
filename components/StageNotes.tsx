@@ -1,6 +1,6 @@
 'use client';
 
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useEffect, useRef, useState } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
 import { resumePoint, savePosition } from '@/lib/player/resume';
@@ -66,6 +66,48 @@ export function FloatingReactions() {
             </motion.span>
           );
         })}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/**
+ * Both of you sent the same reaction at once: one big copy in the middle, a
+ * ring going out from it on each side, and the word for it. Takes no clicks.
+ */
+export function TogetherMoment() {
+  const together = useRuya((s) => s.together);
+  const reduceMotion = useReducedMotion();
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center">
+      <AnimatePresence>
+        {together && (
+          <motion.div
+            key={together.id}
+            className="relative flex flex-col items-center"
+            initial={{ opacity: 0, scale: reduceMotion ? 1 : 0.4 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: reduceMotion ? 1 : 1.15, transition: { duration: 0.5 } }}
+            transition={{ type: 'spring', stiffness: 260, damping: 16 }}
+          >
+            {!reduceMotion &&
+              [0, 0.18].map((delay) => (
+                <motion.span
+                  key={delay}
+                  className="absolute left-1/2 top-[70px] h-[140px] w-[140px] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-gold-hi"
+                  initial={{ opacity: 0.8, scale: 0.6 }}
+                  animate={{ opacity: 0, scale: 2.4 }}
+                  transition={{ duration: 1.3, delay, ease: 'easeOut' }}
+                />
+              ))}
+            <span className="text-[120px] leading-[140px] drop-shadow-[0_10px_30px_rgba(0,0,0,0.6)]">
+              {together.emoji}
+            </span>
+            <span className="mt-2 font-mono text-[11px] uppercase tracking-[0.3em] text-gold-hi drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+              together
+            </span>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );
