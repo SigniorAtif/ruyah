@@ -12,7 +12,7 @@
  */
 
 import type { SyncMessage, SyncTransport, TransportState } from '@/lib/sync/types';
-import { AudioTrackController, nativeAudioSwitching } from './audioTracks';
+import { AudioTrackController, nativeAudioSwitching, prepareSubtitles } from './audioTracks';
 import { primaryLanguage } from './probe';
 import { readSubtitleFile, subtitleLabel } from './subtitles';
 
@@ -193,6 +193,8 @@ export interface EngineStatus {
   activeAudioTrack: number;
   /** A track being pulled out of the file (Chromium only), 0..1. */
   audioPreparing: { index: number; progress: number } | null;
+  /** Embedded subtitles being read out of the file, 0..1. */
+  subtitlesPreparing: number | null;
   audioError: string | null;
 }
 
@@ -287,6 +289,9 @@ export class PlayerEngine {
   private addedTracks: Array<{ el: HTMLTrackElement; url: string }> = [];
   /** Chromium's audio-language switching; null where the browser does it natively. */
   private audioChoice: AudioTrackController | null = null;
+  /** Embedded subtitles being read out of the file, 0..1; null when idle. */
+  private subtitlesPreparing: number | null = null;
+  private subtitleRun = 0;
   private onAudioSwitched: ((label: string) => void) | null = null;
 
   constructor(opts: PlayerEngineOptions) {
@@ -393,6 +398,8 @@ export class PlayerEngine {
       this.addedTracks = [];
       this.audioChoice?.dispose();
       this.audioChoice = null;
+      this.subtitlesPreparing = null;
+      this.subtitleRun++;
       this.video = null;
     };
 
@@ -472,6 +479,7 @@ export class PlayerEngine {
     | 'activeAudioTrack'
     | 'audioPreparing'
     | 'audioError'
+    | 'subtitlesPreparing'
   > {
     const textTracks: MediaTrack[] = [];
     let activeTextTrack = -1;
@@ -510,6 +518,7 @@ export class PlayerEngine {
       activeAudioTrack,
       audioPreparing,
       audioError,
+      subtitlesPreparing: this.subtitlesPreparing,
     };
   }
 
@@ -731,19 +740,80 @@ export class PlayerEngine {
    */
   async addSubtitleFile(file: File): Promise<string> {
     const vtt = await readSubtitleFile(file);
+    const index = this.addVttTrack(vtt, subtitleLabel(file), '');
+    this.setTextTrack(index);
+    return subtitleLabel(file);
+  }
+
+  /** Append WebVTT text as a subtitle track, hidden; returns its textTracks index. */
+  private addVttTrack(vtt: string, label: string, language: string): number {
     const v = this.video;
     if (!v) throw new Error('The player is not ready yet.');
     const url = URL.createObjectURL(new Blob([vtt], { type: 'text/vtt' }));
     const el = document.createElement('track');
     el.kind = 'subtitles';
-    el.label = subtitleLabel(file);
+    el.label = label;
+    if (language) el.srclang = language;
     el.src = url;
     v.appendChild(el);
     this.addedTracks.push({ el, url });
-    // The new TextTrack is the element's; find its index to make it the one shown.
-    const index = Array.prototype.indexOf.call(v.textTracks, el.track);
-    this.setTextTrack(index);
-    return el.label;
+    // The new TextTrack is the element's own; its index is what the pickers use.
+    return Array.prototype.indexOf.call(v.textTracks, el.track);
+  }
+
+  /**
+   * Read the text subtitle tracks out of the file and list them with the
+   * rest. None is shown until someone picks it. Runs in every browser: none of
+   * them read subtitles inside an MKV on their own.
+   */
+  useSubtitlesFrom(file: File): void {
+    const v = this.video;
+    if (!v) return;
+    // Only the latest call may add tracks: a detach and re-attach (React's
+    // double effect in development, or a new file) starts another run, and the
+    // shared job resolves for both.
+    const run = ++this.subtitleRun;
+    const job = prepareSubtitles(file, () => this.video?.duration ?? 0);
+    const tick = () => {
+      this.subtitlesPreparing = job.progress < 1 ? job.progress : null;
+      this.notify();
+    };
+    job.listeners.add(tick);
+    this.subtitlesPreparing = job.progress < 1 ? job.progress : null;
+    job.promise.then(
+      (subs) => {
+        job.listeners.delete(tick);
+        if (this.video !== v || run !== this.subtitleRun) return;
+        this.subtitlesPreparing = null;
+        // Names in the wild are often a release group's tag repeated on every
+        // track; when they do not tell tracks apart, the format does.
+        const names = subs.map((x) => x.track.name);
+        const useful = (n: string) => !!n && names.filter((m) => m === n).length === 1;
+        const lang = (tag: string) => {
+          try {
+            return tag ? (new Intl.DisplayNames(undefined, { type: 'language' }).of(primaryLanguage(tag)) ?? tag) : '';
+          } catch {
+            return tag;
+          }
+        };
+        for (const { track, vtt } of subs) {
+          const parts = [
+            useful(track.name) ? track.name : '',
+            lang(track.language),
+            track.codec === 'srt' ? 'SRT' : track.codec === 'ass' ? 'ASS' : '',
+            track.isDefault ? 'default' : '',
+          ].filter(Boolean);
+          this.addVttTrack(vtt, parts.join(' · ') || `Track ${track.index + 1}`, primaryLanguage(track.language));
+        }
+        this.notify();
+      },
+      () => {
+        job.listeners.delete(tick);
+        if (this.video !== v || run !== this.subtitleRun) return;
+        this.subtitlesPreparing = null;
+        this.notify();
+      },
+    );
   }
 
   /** §11 — constant applied inside the drift math, not a seek. */

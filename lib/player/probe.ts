@@ -1,5 +1,5 @@
 /**
- * Lists a local file's audio tracks by reading only its headers.
+ * Lists a local file's audio and subtitle tracks by reading only its headers.
  *
  * Chromium browsers (Chrome, Brave, Edge) play the first audio track of a file
  * and give pages no way to pick another. Knowing what is in the file is the
@@ -20,6 +20,28 @@ export type AudioCodec =
   | 'dts'
   | 'truehd'
   | 'other';
+
+/** Text formats ffmpeg can turn into WebVTT; `image` is PGS/VobSub, which it cannot. */
+export type SubtitleCodec = 'ass' | 'srt' | 'webvtt' | 'mov_text' | 'image' | 'other';
+
+export interface ProbedSubtitleTrack {
+  /** Position among the file's subtitle tracks, which is also ffmpeg's `0:s:N`. */
+  index: number;
+  language: string;
+  name: string;
+  codec: SubtitleCodec;
+  isDefault: boolean;
+}
+
+export interface ProbedTracks {
+  audio: ProbedAudioTrack[];
+  subtitles: ProbedSubtitleTrack[];
+}
+
+/** Whether a subtitle track can be read out as text. */
+export function isTextSubtitle(codec: SubtitleCodec): boolean {
+  return codec === 'ass' || codec === 'srt' || codec === 'webvtt' || codec === 'mov_text';
+}
 
 export interface ProbedAudioTrack {
   /** Position among the file's audio tracks, which is also ffmpeg's `0:a:N`. */
@@ -52,11 +74,17 @@ function utf8(view: DataView, offset: number, length: number): string {
   return new TextDecoder().decode(bytes).replace(/\0+$/, '');
 }
 
-export async function probeAudioTracks(file: File): Promise<ProbedAudioTrack[]> {
+const NO_TRACKS: ProbedTracks = { audio: [], subtitles: [] };
+
+export async function probeTracks(file: File): Promise<ProbedTracks> {
   const head = await read(file, 0, 16);
   if (head.byteLength >= 4 && head.getUint32(0) === 0x1a45dfa3) return probeMatroska(file);
   if (head.byteLength >= 8 && ascii(head, 4, 4) === 'ftyp') return probeMp4(file);
-  return [];
+  return NO_TRACKS;
+}
+
+export async function probeAudioTracks(file: File): Promise<ProbedAudioTrack[]> {
+  return (await probeTracks(file)).audio;
 }
 
 // ===================================================================== MP4
@@ -117,7 +145,7 @@ function child(view: DataView, start: number, end: number, type: string) {
   return boxes(view, start, end).find(([t]) => t === type);
 }
 
-async function probeMp4(file: File): Promise<ProbedAudioTrack[]> {
+async function probeMp4(file: File): Promise<ProbedTracks> {
   // Walk top-level boxes by their headers until moov, which may sit at the end.
   let p = 0;
   let moov: DataView | null = null;
@@ -135,22 +163,25 @@ async function probeMp4(file: File): Promise<ProbedAudioTrack[]> {
     }
     if (size < header) break;
     if (type === 'moov') {
-      if (size > MAX_SCAN_BYTES) return [];
+      if (size > MAX_SCAN_BYTES) return NO_TRACKS;
       moov = await read(file, p + header, size - header);
       break;
     }
     p += size;
   }
-  if (!moov) return [];
+  if (!moov) return NO_TRACKS;
 
   const tracks: ProbedAudioTrack[] = [];
+  const subtitles: ProbedSubtitleTrack[] = [];
   let firstEnabled = -1;
   for (const [type, s, e] of boxes(moov, 0, moov.byteLength)) {
     if (type !== 'trak') continue;
     const mdia = child(moov, s, e, 'mdia');
     if (!mdia) continue;
     const hdlr = child(moov, mdia[1], mdia[2], 'hdlr');
-    if (!hdlr || ascii(moov, hdlr[1] + 8, 4) !== 'soun') continue;
+    const handler = hdlr ? ascii(moov, hdlr[1] + 8, 4) : '';
+    // 'sbtl' and 'text' are the two handlers MP4 uses for timed text.
+    if (handler !== 'soun' && handler !== 'sbtl' && handler !== 'text') continue;
 
     let language = '';
     const elng = child(moov, mdia[1], mdia[2], 'elng');
@@ -164,18 +195,25 @@ async function probeMp4(file: File): Promise<ProbedAudioTrack[]> {
       if (/^[a-z]{3}$/.test(iso) && iso !== 'und') language = iso;
     }
 
-    let codec: AudioCodec = 'other';
     const stsd = (() => {
       const minf = child(moov, mdia[1], mdia[2], 'minf');
       const stbl = minf && child(moov, minf[1], minf[2], 'stbl');
       return stbl && child(moov, stbl[1], stbl[2], 'stsd');
     })();
-    if (stsd && stsd[2] - stsd[1] >= 16) codec = mp4Codec(ascii(moov, stsd[1] + 12, 4));
+    const fourcc = stsd && stsd[2] - stsd[1] >= 16 ? ascii(moov, stsd[1] + 12, 4) : '';
 
     let name = '';
     const udta = child(moov, s, e, 'udta');
     const nameBox = udta && child(moov, udta[1], udta[2], 'name');
     if (nameBox) name = utf8(moov, nameBox[1], nameBox[2] - nameBox[1]);
+
+    if (handler !== 'soun') {
+      const codec: SubtitleCodec =
+        fourcc === 'tx3g' ? 'mov_text' : fourcc === 'wvtt' ? 'webvtt' : 'other';
+      subtitles.push({ index: subtitles.length, language, name, codec, isDefault: false });
+      continue;
+    }
+    const codec = mp4Codec(fourcc);
 
     const tkhd = child(moov, s, e, 'tkhd');
     const enabled = tkhd ? (moov.getUint32(tkhd[1]) & 1) === 1 : true;
@@ -184,7 +222,7 @@ async function probeMp4(file: File): Promise<ProbedAudioTrack[]> {
     tracks.push({ index: tracks.length, language, name, codec, isDefault: false });
   }
   if (tracks.length) tracks[Math.max(0, firstEnabled)].isDefault = true;
-  return tracks;
+  return { audio: tracks, subtitles };
 }
 
 // ================================================================ Matroska
@@ -245,6 +283,14 @@ function ebmlUint(view: DataView, start: number, size: number): number {
   return n;
 }
 
+function mkvSubtitleCodec(id: string): SubtitleCodec {
+  if (id === 'S_TEXT/ASS' || id === 'S_TEXT/SSA' || id === 'S_ASS' || id === 'S_SSA') return 'ass';
+  if (id === 'S_TEXT/UTF8' || id === 'S_TEXT/ASCII') return 'srt';
+  if (id === 'S_TEXT/WEBVTT') return 'webvtt';
+  if (id === 'S_HDMV/PGS' || id === 'S_VOBSUB' || id === 'S_DVBSUB') return 'image';
+  return 'other';
+}
+
 function mkvCodec(id: string): AudioCodec {
   if (id.startsWith('A_AAC')) return 'aac';
   if (id === 'A_MPEG/L3') return 'mp3';
@@ -259,8 +305,9 @@ function mkvCodec(id: string): AudioCodec {
   return 'other';
 }
 
-function parseTracks(view: DataView): ProbedAudioTrack[] {
+function parseTracks(view: DataView): ProbedTracks {
   const tracks: ProbedAudioTrack[] = [];
+  const subtitles: ProbedSubtitleTrack[] = [];
   let p = 0;
   while (p < view.byteLength) {
     const el = ebmlHeader(view, p);
@@ -289,19 +336,30 @@ function parseTracks(view: DataView): ProbedAudioTrack[] {
         const lang = bcp47 || (language === 'und' ? '' : language);
         tracks.push({ index: tracks.length, language: lang, name, codec: mkvCodec(codecId), isDefault });
       }
+      // 17 is Matroska's subtitle track type.
+      if (type === 17) {
+        const lang = bcp47 || (language === 'und' ? '' : language);
+        subtitles.push({
+          index: subtitles.length,
+          language: lang,
+          name,
+          codec: mkvSubtitleCodec(codecId),
+          isDefault,
+        });
+      }
     }
     p = end;
   }
-  return tracks;
+  return { audio: tracks, subtitles };
 }
 
-async function probeMatroska(file: File): Promise<ProbedAudioTrack[]> {
+async function probeMatroska(file: File): Promise<ProbedTracks> {
   // EBML header, then the Segment.
   const head = await read(file, 0, 4096);
   const ebml = ebmlHeader(head, 0);
-  if (!ebml || ebml.size < 0) return [];
+  if (!ebml || ebml.size < 0) return NO_TRACKS;
   const seg = ebmlHeader(head, ebml.dataStart + ebml.size);
-  if (!seg || seg.id !== ID.Segment) return [];
+  if (!seg || seg.id !== ID.Segment) return NO_TRACKS;
   const segmentData = seg.dataStart;
 
   const readTracksAt = async (pos: number) => {
@@ -318,7 +376,7 @@ async function probeMatroska(file: File): Promise<ProbedAudioTrack[]> {
     const view = await read(file, p, 16);
     const el = ebmlHeader(view, 0);
     if (!el) break;
-    if (el.id === ID.Tracks) return (await readTracksAt(p)) ?? [];
+    if (el.id === ID.Tracks) return (await readTracksAt(p)) ?? NO_TRACKS;
     if (el.id === ID.SeekHead && el.size > 0 && el.size < 1024 * 1024) {
       const seek = await read(file, p + el.dataStart, el.size);
       let q = 0;
@@ -344,8 +402,8 @@ async function probeMatroska(file: File): Promise<ProbedAudioTrack[]> {
     if (el.id === ID.Cluster || el.size < 0) break;
     p += el.dataStart + el.size;
   }
-  if (tracksPos >= 0) return (await readTracksAt(tracksPos)) ?? [];
-  return [];
+  if (tracksPos >= 0) return (await readTracksAt(tracksPos)) ?? NO_TRACKS;
+  return NO_TRACKS;
 }
 
 // ================================================================ helpers
