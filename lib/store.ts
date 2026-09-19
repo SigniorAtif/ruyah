@@ -129,6 +129,22 @@ export interface FloatingReaction {
   id: number;
   emoji: string;
   mine: boolean;
+  /** Copies in the burst this one came with; big bursts scatter instead of rising. */
+  burst: number;
+  /** Where it appears, as % of the stage from the left and from the bottom. */
+  x: number;
+  y: number;
+}
+
+/** Bursts bigger than this scatter over the whole screen and rock in place. */
+export const SCATTER_ABOVE = 7;
+
+/** Picked once, when it is pushed, so a re-render never moves one. */
+function reactionSpot(burst: number): { x: number; y: number } {
+  const x = 6 + Math.random() * 88;
+  // A small burst rises from the bottom 15%; a big one lands anywhere.
+  const y = burst > SCATTER_ABOVE ? 8 + Math.random() * 78 : Math.random() * 15;
+  return { x, y };
 }
 
 function wireId(): string {
@@ -349,7 +365,10 @@ function pushReaction(
 ): void {
   const float = () => {
     const id = ++reactionSeq;
-    set((s) => ({ reactions: [...s.reactions, { id, emoji, mine }].slice(-REACTIONS_ON_SCREEN) }));
+    const spot = reactionSpot(count);
+    set((s) => ({
+      reactions: [...s.reactions, { id, emoji, mine, burst: count, ...spot }].slice(-REACTIONS_ON_SCREEN),
+    }));
     setTimeout(() => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })), REACTION_MS);
   };
   float();
