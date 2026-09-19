@@ -38,7 +38,7 @@ function defersToTarget(target: EventTarget | null, key: string): boolean {
       return true;
     case 'INPUT': {
       const type = (target as HTMLInputElement).type;
-      // Chat lands here in Phase 2; a text field keeps every key.
+      // The chat input lands here; a text field keeps every key.
       if (!['range', 'checkbox', 'radio', 'button', 'submit', 'reset'].includes(type)) {
         return true;
       }
@@ -57,6 +57,10 @@ export interface ShortcutHandlers {
   onToggleKeys?: () => void;
   /** Escape — close whatever panel is open. */
   onEscape?: () => void;
+  /** `c` — show or hide the chat aside. */
+  onToggleChat?: () => void;
+  /** `h` — the hold-on picker. */
+  onHold?: () => void;
 }
 
 export function useKeyboardShortcuts(
@@ -65,6 +69,7 @@ export function useKeyboardShortcuts(
 ) {
   // Held in a ref so a new closure each render does not re-bind the listener.
   const handlersRef = useRef(handlers);
+  const lastTextTrack = useRef(-1);
   useEffect(() => {
     handlersRef.current = handlers;
   });
@@ -148,6 +153,37 @@ export function useKeyboardShortcuts(
           const next = !status.muted;
           engine.setMuted(next);
           showToast(next ? 'Muted' : `Volume ${Math.round(status.volume * 100)}%`);
+          return;
+        }
+
+        case 'c':
+        case 'C':
+          handlersRef.current.onToggleChat?.();
+          return;
+
+        case 'h':
+        case 'H':
+          handlersRef.current.onHold?.();
+          return;
+
+        case 's':
+        case 'S': {
+          // Off goes back to whichever track was last on, or the first one.
+          if (status.activeTextTrack >= 0) {
+            lastTextTrack.current = status.activeTextTrack;
+            engine.setTextTrack(-1);
+            showToast('Subtitles off');
+            return;
+          }
+          const tracks = status.textTracks;
+          const next =
+            tracks.find((t) => t.index === lastTextTrack.current) ?? tracks[0];
+          if (!next) {
+            showToast('No subtitles loaded');
+            return;
+          }
+          engine.setTextTrack(next.index);
+          showToast(`Subtitles · ${next.label || next.language || 'on'}`);
           return;
         }
 

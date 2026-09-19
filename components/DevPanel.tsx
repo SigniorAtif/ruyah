@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import { getEngine, useRuya } from '@/lib/store';
 
 /**
@@ -16,7 +17,8 @@ import { getEngine, useRuya } from '@/lib/store';
  * this client's decoder only and broadcast nothing, which is exactly what real
  * drift looks like.
  */
-export function DevPanel({ onClose }: { onClose: () => void }) {
+export function DevPanel() {
+  const [open, setOpen] = useState(false);
   const network = useRuya((s) => s.network);
   const setNetwork = useRuya((s) => s.setNetwork);
   const status = useRuya((s) => s.status);
@@ -25,41 +27,26 @@ export function DevPanel({ onClose }: { onClose: () => void }) {
 
   if (!network) return null;
 
-  const drift = status?.driftMs;
-  const rows: Array<[string, string]> = [
-    ['transport', transportState],
-    ['peer', peerPresent ? 'present' : 'absent'],
-    ['drift', drift === null || drift === undefined ? '—' : `${drift > 0 ? '+' : ''}${Math.round(drift)} ms`],
-    ['deadband', `±${Math.round(status?.deadbandMs ?? 0)} ms`],
-    ['rtt', `${Math.round(status?.rttMs ?? 0)} ±${Math.round(status?.rttStdDevMs ?? 0)} ms`],
-    ['measured loss', `${Math.round((status?.lossRate ?? 0) * 100)} %`],
-    ['rate', `${(status?.playbackRate ?? 1).toFixed(2)}×`],
-    ['confirmations', `${status?.pendingHardDrift ?? 0}/3`],
-    ['role', status?.isAuthority ? 'authority' : 'follower'],
-  ];
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="pointer-events-auto absolute bottom-24 left-4 z-50 rounded bg-black/50 px-2 py-1 font-mono text-[10px] text-muted backdrop-blur hover:text-foreground"
+      >
+        dev
+      </button>
+    );
+  }
 
   return (
-    <div className="absolute bottom-[136px] left-[clamp(16px,2vw,26px)] z-50 max-h-[calc(100%-180px)] w-[min(300px,calc(100%-32px))] overflow-y-auto rounded border border-foreground/15 bg-[rgba(20,19,18,0.94)] px-5 py-[18px] font-mono text-[10.5px] backdrop-blur-md [animation:ry-pop_.4s_cubic-bezier(.2,.8,.2,1)_both]">
-      <div className="mb-3.5 flex items-center justify-between">
-        <span className="kicker text-[9.5px] tracking-[0.2em]">instruments</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Close instruments"
-          className="cursor-pointer border-0 bg-transparent p-0 text-faint transition-colors duration-300 hover:text-foreground"
-        >
+    <div className="pointer-events-auto absolute bottom-24 left-4 z-50 w-72 rounded border border-line bg-panel/95 p-3 font-mono text-[11px] backdrop-blur">
+      <div className="flex items-center justify-between">
+        <span className="text-muted">network simulation</span>
+        <button type="button" onClick={() => setOpen(false)} className="text-muted hover:text-foreground">
           ✕
         </button>
       </div>
-
-      <dl className="mb-3.5 flex flex-col gap-[7px] border-b border-line-soft pb-3.5 tabular-nums text-muted">
-        {rows.map(([k, v]) => (
-          <div key={k} className="flex justify-between gap-3">
-            <dt className="text-faint">{k}</dt>
-            <dd>{v}</dd>
-          </div>
-        ))}
-      </dl>
 
       <Slider
         label="latency"
@@ -89,47 +76,57 @@ export function DevPanel({ onClose }: { onClose: () => void }) {
         onChange={(pct) => setNetwork({ dropRate: pct / 100 })}
       />
 
-      <div className="mt-3.5 flex flex-col gap-2 border-t border-line-soft pt-3.5">
-        <p className="kicker">inject drift</p>
-        <div className="grid grid-cols-4 gap-1.5">
+      <button
+        type="button"
+        onClick={() => setNetwork({ connected: !network.connected })}
+        className={`mt-3 w-full rounded px-2 py-1.5 ${
+          network.connected ? 'border border-bad/40 text-bad' : 'bg-bad text-background'
+        }`}
+      >
+        {network.connected ? 'drop connection' : 'restore connection'}
+      </button>
+
+      <div className="mt-3 border-t border-line pt-2 text-muted">
+        <span>inject drift</span>
+        <div className="mt-1.5 grid grid-cols-4 gap-1">
           {[-2.5, -0.4, 0.4, 2.5].map((d) => (
-            <ActionButton key={d} onClick={() => getEngine()?.debugInjectDrift(d)} center>
+            <button
+              key={d}
+              type="button"
+              onClick={() => getEngine()?.debugInjectDrift(d)}
+              className="rounded border border-line py-1 hover:border-muted hover:text-foreground"
+            >
               {d > 0 ? `+${d}` : d}s
-            </ActionButton>
+            </button>
           ))}
         </div>
-        <ActionButton
-          onClick={() => setNetwork({ connected: !network.connected })}
-          danger={network.connected}
-        >
-          {network.connected ? 'drop the connection' : 'restore the connection'}
-        </ActionButton>
       </div>
-    </div>
-  );
-}
 
-function ActionButton({
-  children,
-  onClick,
-  center,
-  danger,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  center?: boolean;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`cursor-pointer rounded-[3px] border bg-transparent px-[11px] py-2 text-[10px] uppercase tracking-[0.14em] transition-colors duration-300 hover:border-gold hover:text-gold-hi ${
-        center ? 'text-center' : 'text-left'
-      } ${danger ? 'border-bad/40 text-bad' : 'border-foreground/20 text-muted'}`}
-    >
-      {children}
-    </button>
+      <dl className="mt-3 space-y-1 border-t border-line pt-2 text-muted">
+        <Readout label="transport" value={transportState} />
+        <Readout label="peer" value={peerPresent ? 'present' : 'absent'} />
+        <Readout
+          label="drift"
+          value={
+            status?.driftMs === null || status?.driftMs === undefined
+              ? '—'
+              : `${status.driftMs > 0 ? '+' : ''}${Math.round(status.driftMs)} ms`
+          }
+        />
+        <Readout label="deadband" value={`±${Math.round(status?.deadbandMs ?? 0)} ms`} />
+        <Readout
+          label="rtt"
+          value={`${Math.round(status?.rttMs ?? 0)} ±${Math.round(status?.rttStdDevMs ?? 0)} ms`}
+        />
+        <Readout
+          label="measured loss"
+          value={`${Math.round((status?.lossRate ?? 0) * 100)} %`}
+        />
+        <Readout label="rate" value={(status?.playbackRate ?? 1).toFixed(2)} />
+        <Readout label="confirmations" value={`${status?.pendingHardDrift ?? 0}/3`} />
+        <Readout label="role" value={status?.isAuthority ? 'authority' : 'follower'} />
+      </dl>
+    </div>
   );
 }
 
@@ -152,9 +149,9 @@ function Slider({
 }) {
   return (
     <div className="mt-2.5">
-      <div className="flex justify-between text-faint">
+      <div className="flex justify-between text-muted">
         <span>{label}</span>
-        <span className="tabular-nums text-muted">
+        <span className="text-foreground">
           {value} {suffix}
         </span>
       </div>
@@ -165,9 +162,18 @@ function Slider({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="mt-1 w-full cursor-pointer accent-gold"
+        className="mt-1 w-full"
         aria-label={label}
       />
+    </div>
+  );
+}
+
+function Readout({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt>{label}</dt>
+      <dd className="text-foreground">{value}</dd>
     </div>
   );
 }

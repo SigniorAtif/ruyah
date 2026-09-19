@@ -11,11 +11,8 @@ import { nameOf, useRuya } from '@/lib/store';
  */
 export function ConnectionOverlay({
   onLeave,
-  onOpenDev,
 }: {
   onLeave: () => void;
-  /** The dev panel is how a pulled cable gets plugged back in; see DevPanel. */
-  onOpenDev?: () => void;
 }) {
   const status = useRuya((s) => s.status);
   const peerUserId = useRuya((s) => s.peerUserId);
@@ -74,17 +71,6 @@ export function ConnectionOverlay({
           : undefined
       }
       onLeave={onLeave}
-      footer={
-        onOpenDev && (
-          <button
-            type="button"
-            onClick={onOpenDev}
-            className="kicker mt-6 cursor-pointer border-0 bg-transparent p-0 tracking-[0.18em] transition-colors duration-300 hover:text-foreground"
-          >
-            dev
-          </button>
-        )
-      }
     />
   );
 }
