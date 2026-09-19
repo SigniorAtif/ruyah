@@ -1,11 +1,18 @@
 'use client';
 
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+  type RefObject,
+} from 'react';
 import type { MediaTrack } from '@/lib/player/engine';
 import { formatClock } from '@/lib/player/fingerprint';
 import { SUBTITLE_ACCEPT } from '@/lib/player/subtitles';
 import { AnimatePresence, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
-import { ALL_EMOJI, MAX_BURST } from '@/lib/emoji';
+import { EMOJI_GROUPS, MAX_BURST, searchEmoji } from '@/lib/emoji';
 import { getEngine, REACTIONS, useRuya } from '@/lib/store';
 import { formatOffset, useDisplayOffset } from './PlayerPanels';
 
@@ -658,24 +665,7 @@ function ReactPopover({ onDone }: { onDone: () => void }) {
         <AnimatePresence mode="popLayout" initial={false}>
           {expanded ? (
             <motion.div key="all" layout {...fade} className="p-2">
-              <div className="flex items-center justify-between pb-1 pl-2">
-                <span className="kicker">all reactions</span>
-                <button
-                  type="button"
-                  onClick={() => setExpanded(false)}
-                  aria-label="Fewer reactions"
-                  aria-expanded
-                  className="flex h-7 w-7 cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
-                >
-                  <ChevronIcon down />
-                </button>
-              </div>
-              <div
-                className="grid max-h-[228px] overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,black_86%,transparent)] [scrollbar-width:none]"
-                style={{ gridTemplateColumns: `repeat(7, ${EMOJI_PX}px)` }}
-              >
-                {ALL_EMOJI.map(emojiButton)}
-              </div>
+              <EmojiBrowser renderEmoji={emojiButton} onCollapse={() => setExpanded(false)} />
             </motion.div>
           ) : (
             <motion.div key="quick" layout {...fade} className="flex items-center gap-1 px-2 py-1.5">
@@ -727,6 +717,138 @@ function ReactPopover({ onDone }: { onDone: () => void }) {
         </div>
       )}
     </motion.div>
+  );
+}
+
+/**
+ * Every reaction, in sections with tabs that jump between them, and a search
+ * that narrows them to the ones whose words match.
+ */
+function EmojiBrowser({
+  renderEmoji,
+  onCollapse,
+}: {
+  renderEmoji: (emoji: string) => ReactNode;
+  onCollapse: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [active, setActive] = useState(EMOJI_GROUPS[0].id);
+  const scroller = useRef<HTMLDivElement>(null);
+  const search = useRef<HTMLInputElement>(null);
+  const sections = useRef(new Map<string, HTMLElement>());
+  const results = query.trim() ? searchEmoji(query) : null;
+
+  useEffect(() => {
+    // Straight to typing with a mouse; on touch that would throw up the keyboard.
+    if (!window.matchMedia('(pointer: coarse)').matches) search.current?.focus();
+  }, []);
+
+  const jump = (id: string) => {
+    const el = sections.current.get(id);
+    const box = scroller.current;
+    if (!el || !box) return;
+    box.scrollTo({ top: el.offsetTop - box.offsetTop, behavior: 'smooth' });
+  };
+
+  // The tab under the top edge of the grid is the one lit.
+  const onScroll = () => {
+    const box = scroller.current;
+    if (!box) return;
+    let current = EMOJI_GROUPS[0].id;
+    for (const g of EMOJI_GROUPS) {
+      const el = sections.current.get(g.id);
+      if (el && el.offsetTop - box.offsetTop <= box.scrollTop + 8) current = g.id;
+    }
+    setActive(current);
+  };
+
+  const grid = { gridTemplateColumns: `repeat(7, ${EMOJI_PX}px)` };
+
+  return (
+    <>
+      <div className="flex items-center gap-2 pb-1.5 pl-2">
+        <input
+          ref={search}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Escape') return;
+            // First Escape clears the search; the next one leaves the field.
+            e.stopPropagation();
+            if (query) setQuery('');
+            else e.currentTarget.blur();
+          }}
+          placeholder="search"
+          aria-label="Search reactions"
+          spellCheck={false}
+          className="min-w-0 flex-1 border-0 border-b border-line bg-transparent px-0.5 py-1 font-mono text-[11px] text-foreground caret-gold-hi outline-none transition-colors duration-300 placeholder:uppercase placeholder:tracking-[0.16em] focus:border-gold"
+        />
+        <button
+          type="button"
+          onClick={onCollapse}
+          aria-label="Fewer reactions"
+          aria-expanded
+          className="flex h-7 w-7 flex-none cursor-pointer items-center justify-center rounded-full border-0 bg-transparent text-muted transition-colors duration-200 hover:bg-foreground/10 hover:text-gold-hi"
+        >
+          <ChevronIcon down />
+        </button>
+      </div>
+      {!results && (
+        <div role="tablist" aria-label="Reaction groups" className="flex gap-1 pb-1.5 pl-1">
+          {EMOJI_GROUPS.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              role="tab"
+              aria-selected={active === g.id}
+              onClick={() => jump(g.id)}
+              className={`cursor-pointer rounded-full border-0 px-2 py-0.5 font-mono text-[9.5px] uppercase tracking-[0.14em] transition-colors duration-200 ${
+                active === g.id ? 'bg-gold/15 text-gold-hi' : 'bg-transparent text-faint hover:text-foreground'
+              }`}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div
+        ref={scroller}
+        onScroll={onScroll}
+        className="relative h-[228px] overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,black_86%,transparent)] [scrollbar-width:none]"
+      >
+        {results ? (
+          results.length ? (
+            <div className="grid" style={grid}>
+              {results.map(renderEmoji)}
+            </div>
+          ) : (
+            <p className="px-2 pt-6 text-center font-display text-[15px] italic text-muted">
+              Nothing by that name.
+            </p>
+          )
+        ) : (
+          EMOJI_GROUPS.map((g, i) => (
+            <section
+              key={g.id}
+              ref={(el) => {
+                if (el) sections.current.set(g.id, el);
+                else sections.current.delete(g.id);
+              }}
+              aria-label={g.label}
+            >
+              <p
+                className={`px-2 pb-1 font-mono text-[9px] uppercase tracking-[0.18em] text-faint ${i ? 'pt-2' : ''}`}
+              >
+                {g.label}
+              </p>
+              <div className="grid" style={grid}>
+                {g.emoji.map(([e]) => renderEmoji(e))}
+              </div>
+            </section>
+          ))
+        )}
+      </div>
+    </>
   );
 }
 
