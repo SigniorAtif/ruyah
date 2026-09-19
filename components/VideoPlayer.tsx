@@ -40,7 +40,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const fingerprint = useRuya((s) => s.fingerprint);
   const peerFingerprint = useRuya((s) => s.peerFingerprint);
   const setReady = useRuya((s) => s.setReady);
-  const leave = useRuya((s) => s.leave);
+  const leave = useRuya((s) => s.leaveRoom);
   const setChatOpen = useRuya((s) => s.setChatOpen);
 
   const sameEncode = fingerprintsMatch(fingerprint, peerFingerprint);
