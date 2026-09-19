@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { FileDropZone } from './FileDropZone';
+import { RejoinCard } from './RejoinCard';
 import {
   fingerprintsMatch,
   nameOf,
@@ -159,6 +160,8 @@ export function Lobby() {
 
       <section className="flex flex-col justify-center gap-6 bg-panel px-[clamp(16px,5vw,72px)] py-[clamp(40px,6vw,88px)]">
         <p className="kicker tracking-[0.22em] text-kicker">begin</p>
+
+        <RejoinCard />
 
         <div>
           <label className="kicker mb-[9px] block" htmlFor="name">
@@ -409,7 +412,7 @@ function Room({ onEnter }: { onEnter: () => void }) {
   const fileError = useRuya((s) => s.fileError);
   const selfReady = useRuya((s) => s.selfReady);
   const setReady = useRuya((s) => s.setReady);
-  const leave = useRuya((s) => s.leave);
+  const leave = useRuya((s) => s.leaveRoom);
 
   const partner = nameOf(peerUserId);
   const match = fingerprintsMatch(fingerprint, peerFingerprint);
