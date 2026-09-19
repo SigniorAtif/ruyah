@@ -94,18 +94,45 @@ const CHAT_KEEP = 200;
 /** How long a line shows over the film in fullscreen, where the aside is hidden. */
 const CHAT_TOAST_MS = 5_400;
 let chatSeq = 0;
+/** How much of a replied-to line travels with the reply. */
+const QUOTE_CHARS = 90;
+/** The reactions offered, and the only ones shown when they arrive. */
+export const REACTIONS = ['😂', '😭', '🥺', '🥹', '🫦', '💝'] as const;
+/** How long a reaction floats over the film. */
+const REACTION_MS = 2_600;
+/** A typing notice lapses on its own if the next one never comes. */
+const TYPING_LAPSE_MS = 4_000;
 
 export interface ChatMessage {
   id: number;
+  /** Shared by both sides; what a reply points at. */
+  wireId: string;
   mine: boolean;
   text: string;
-  /** Sender's film time when it was said, or null from a peer that did not send one. */
+  /** Film time when the sender started typing, or null from a peer that did not send one. */
   position: number | null;
+  /** A line marking a hold-on pause, drawn as a note rather than a bubble. */
+  hold?: boolean;
+  reply?: { wireId: string; text: string; mine: boolean } | null;
+}
+
+export interface FloatingReaction {
+  id: number;
+  emoji: string;
+  mine: boolean;
+}
+
+function wireId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID().slice(0, 12)
+    : Math.random().toString(36).slice(2, 14);
 }
 
 /** Transient on-screen feedback; the control bar is usually hidden. */
 const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+let typingTimer: ReturnType<typeof setTimeout> | null = null;
+let reactionSeq = 0;
 let toastSeq = 0;
 
 let transport: SyncTransport | null = null;
@@ -156,6 +183,11 @@ interface RuyaState {
    * the aside has opened, so there is something to fly from.
    */
   chatHandoffPending: boolean;
+  /** The other person is writing something. */
+  peerTyping: boolean;
+  reactions: FloatingReaction[];
+  /** A hold-on pause in force, and who asked for it. Cleared on the next play. */
+  hold: { mine: boolean; reason: string } | null;
   /**
    * Lines that arrived by flying in from a toast. They keep a separate key
    * from then on, so they are not remounted and re-animated later.
@@ -182,7 +214,12 @@ interface RuyaState {
   /** §8 — re-open a transport that has given up. See the action for why. */
   reconnect(): Promise<void>;
   showToast(text: string): void;
-  sendChat(text: string): void;
+  sendChat(text: string, opts?: { position?: number; replyTo?: string }): void;
+  /** Tell the other side we are typing (throttled by the caller). */
+  sendTyping(): void;
+  sendReaction(emoji: string): void;
+  /** Pause for both, with a reason the other person sees. */
+  holdOn(reason: string): void;
   setChatOpen(open: boolean): void;
   leave(): void;
 }
@@ -196,6 +233,9 @@ type SessionData = Omit<
   | 'ensureEngine'
   | 'showToast'
   | 'sendChat'
+  | 'sendTyping'
+  | 'sendReaction'
+  | 'holdOn'
   | 'setChatOpen'
   | 'reconnect'
   | 'leave'
@@ -238,6 +278,9 @@ const EMPTY_SESSION: SessionData = {
   unread: 0,
   chatToasts: [],
   chatHandoffPending: false,
+  peerTyping: false,
+  reactions: [],
+  hold: null,
   chatLanded: [],
 
   sessionError: null,
@@ -267,6 +310,35 @@ function pushChat(
       CHAT_TOAST_MS,
     );
   }
+}
+
+/**
+ * What a reply points at. The line itself when we have it; otherwise the copy
+ * that travelled with it, for a line said before we joined or long scrolled off.
+ */
+function resolveReply(
+  messages: ChatMessage[],
+  replyTo: unknown,
+  quote: unknown,
+): ChatMessage['reply'] {
+  if (typeof replyTo !== 'string') return null;
+  const found = messages.find((m) => m.wireId === replyTo);
+  if (found) return { wireId: found.wireId, text: found.text, mine: found.mine };
+  if (typeof quote !== 'string' || !quote.trim()) return null;
+  // Not in our list, so it can only have been ours if we sent it earlier; the
+  // safe reading is theirs.
+  return { wireId: replyTo, text: quote.slice(0, QUOTE_CHARS), mine: false };
+}
+
+/** Float a reaction over the film for a moment, on this side. */
+function pushReaction(
+  set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
+  emoji: string,
+  mine: boolean,
+): void {
+  const id = ++reactionSeq;
+  set((s) => ({ reactions: [...s.reactions, { id, emoji, mine }].slice(-12) }));
+  setTimeout(() => set((s) => ({ reactions: s.reactions.filter((r) => r.id !== id) })), REACTION_MS);
 }
 
 export const useRuya = create<RuyaState>((set, get) => ({
@@ -301,13 +373,32 @@ export const useRuya = create<RuyaState>((set, get) => ({
         if (msg.type !== 'chat') return;
         // Relayed verbatim, so nothing upstream has checked the shape.
         if (typeof msg.text !== 'string') return;
+        const kind = msg.kind ?? 'text';
+        if (kind === 'typing') {
+          set({ peerTyping: true });
+          if (typingTimer !== null) clearTimeout(typingTimer);
+          typingTimer = setTimeout(() => set({ peerTyping: false }), TYPING_LAPSE_MS);
+          return;
+        }
+        if (kind === 'reaction') {
+          if ((REACTIONS as readonly string[]).includes(msg.text)) pushReaction(set, msg.text, false);
+          return;
+        }
         const text = msg.text.trim().slice(0, CHAT_MAX_CHARS);
         if (!text) return;
+        // Whatever they were typing has arrived.
+        if (typingTimer !== null) clearTimeout(typingTimer);
+        set({ peerTyping: false });
+        const position = Number.isFinite(msg.position) ? (msg.position as number) : null;
+        if (kind === 'hold') set({ hold: { mine: false, reason: text } });
         pushChat(set, {
           id: ++chatSeq,
+          wireId: typeof msg.id === 'string' ? msg.id.slice(0, 24) : wireId(),
           mine: false,
           text,
-          position: Number.isFinite(msg.position) ? (msg.position as number) : null,
+          position,
+          hold: kind === 'hold',
+          reply: resolveReply(get().messages, msg.replyTo, msg.quote),
         });
       }),
     );
@@ -460,7 +551,16 @@ export const useRuya = create<RuyaState>((set, get) => ({
     if (engine) return engine;
     engine = new PlayerEngine({ transport });
     // Playback state is mirrored into the store so components stay dumb (§3).
-    unsubscribers.push(engine.subscribe((status) => set({ status })));
+    unsubscribers.push(
+      engine.subscribe((status) => {
+        // A hold lasts until someone presses play again: a paused-to-playing
+        // edge, not just "playing", because the hold's own pause is scheduled
+        // a moment ahead and the film is still running when it is asked for.
+        const resumed = status.playing && get().status?.playing === false;
+        if (resumed && get().hold) set({ status, hold: null });
+        else set({ status });
+      }),
+    );
     return engine;
   },
 
@@ -474,18 +574,78 @@ export const useRuya = create<RuyaState>((set, get) => ({
     }, TOAST_MS);
   },
 
-  sendChat(raw) {
+  sendChat(raw, opts = {}) {
     const text = raw.trim().slice(0, CHAT_MAX_CHARS);
     if (!text || !transport) return;
-    const position = engine?.getStatus().position ?? 0;
+    // Stamped with when they started typing, which is the moment they mean;
+    // by the time they hit enter the film has moved on.
+    const position = opts.position ?? engine?.getStatus().position ?? 0;
+    const id = wireId();
+    const replied = opts.replyTo
+      ? get().messages.find((m) => m.wireId === opts.replyTo)
+      : undefined;
     transport.send({
       type: 'chat',
       userId: get().userId,
       text,
       at: transport.syncedNow(),
       position,
+      id,
+      ...(replied ? { replyTo: replied.wireId, quote: replied.text.slice(0, QUOTE_CHARS) } : {}),
     });
-    pushChat(set, { id: ++chatSeq, mine: true, text, position });
+    pushChat(set, {
+      id: ++chatSeq,
+      wireId: id,
+      mine: true,
+      text,
+      position,
+      reply: replied ? { wireId: replied.wireId, text: replied.text, mine: replied.mine } : null,
+    });
+  },
+
+  sendTyping() {
+    if (!transport) return;
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text: '',
+      at: transport.syncedNow(),
+      kind: 'typing',
+    });
+  },
+
+  sendReaction(emoji) {
+    if (!transport || !(REACTIONS as readonly string[]).includes(emoji)) return;
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text: emoji,
+      at: transport.syncedNow(),
+      position: engine?.getStatus().position ?? 0,
+      kind: 'reaction',
+    });
+    pushReaction(set, emoji, true);
+  },
+
+  holdOn(raw) {
+    const reason = raw.trim().slice(0, CHAT_MAX_CHARS) || 'hold on';
+    if (!transport) return;
+    // An ordinary pause, so it reaches both players through the engine; the
+    // reason travels beside it as a chat line.
+    if (engine?.getStatus().playing) engine.pause();
+    const position = engine?.getStatus().position ?? 0;
+    const id = wireId();
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text: reason,
+      at: transport.syncedNow(),
+      position,
+      id,
+      kind: 'hold',
+    });
+    set({ hold: { mine: true, reason } });
+    pushChat(set, { id: ++chatSeq, wireId: id, mine: true, text: reason, position, hold: true });
   },
 
   setChatOpen(open) {
@@ -528,6 +688,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     if (file) releaseFile(file);
     if (toastTimer !== null) clearTimeout(toastTimer);
     toastTimer = null;
+    if (typingTimer !== null) clearTimeout(typingTimer);
+    typingTimer = null;
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
     // the room screen while it is set, and VideoPlayer routes back to '/' when
     // it no longer matches the URL (or the object URL is gone).
