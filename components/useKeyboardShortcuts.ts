@@ -61,6 +61,8 @@ export interface ShortcutHandlers {
   onToggleChat?: () => void;
   /** `h` — the hold-on picker. */
   onHold?: () => void;
+  /** `p` held down, then released: point at the frame for both of you. */
+  onPoint?: (down: boolean) => void;
 }
 
 export function useKeyboardShortcuts(
@@ -86,6 +88,11 @@ export function useKeyboardShortcuts(
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (event.repeat && event.key === ' ') return; // holding space is not a rattle of toggles
       if (defersToTarget(event.target, event.key)) return;
+
+      if ((event.key === 'p' || event.key === 'P') && !event.repeat) {
+        handlersRef.current.onPoint?.(true);
+        return;
+      }
 
       if (event.key === '?') {
         handlersRef.current.onToggleKeys?.();
@@ -211,7 +218,19 @@ export function useKeyboardShortcuts(
       }
     };
 
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === 'p' || event.key === 'P') handlersRef.current.onPoint?.(false);
+    };
+    // A window that loses focus never sees the keyup, and the dot would stick.
+    const onBlur = () => handlersRef.current.onPoint?.(false);
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [containerRef]);
 }

@@ -129,6 +129,8 @@ const REACTION_MS = 2_600;
 const BURST_GAP_MS = 70;
 /** On screen at once, across both people; enough for two full bursts. */
 const REACTIONS_ON_SCREEN = 32;
+/** A pointed-at spot lapses on its own, in case the release frame is lost. */
+const POINT_LAPSE_MS = 2_000;
 /** A typing notice lapses on its own if the next one never comes. */
 const TYPING_LAPSE_MS = 4_000;
 
@@ -190,6 +192,7 @@ function wireId(): string {
 const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let typingTimer: ReturnType<typeof setTimeout> | null = null;
+let pointTimer: ReturnType<typeof setTimeout> | null = null;
 let reactionSeq = 0;
 /** The latest reaction from each side, by arrival here, for spotting a match. */
 let lastReaction: { mine: { emoji: string; at: number } | null; theirs: { emoji: string; at: number } | null } = {
@@ -250,6 +253,8 @@ interface RuyaState {
   chatHandoffPending: boolean;
   /** The other person is writing something. */
   peerTyping: boolean;
+  /** Where the other person is pointing, as a fraction of the picture. */
+  peerPoint: { x: number; y: number } | null;
   reactions: FloatingReaction[];
   /** Every reaction this session, both sides, with where in the film it was. */
   moments: ReactionMoment[];
@@ -290,6 +295,11 @@ interface RuyaState {
   sendChat(text: string, opts?: { position?: number; replyTo?: string }): void;
   /** Tell the other side we are typing (throttled by the caller). */
   sendTyping(): void;
+  /**
+   * Point at a spot in the picture, as a fraction of it, or null to stop.
+   * Throttled by the caller; it goes out as often as the mouse moves.
+   */
+  sendPoint(spot: { x: number; y: number } | null): void;
   /** `count` above one is a held reaction; clamped to MAX_BURST. */
   sendReaction(emoji: string, count?: number): void;
   /** Pause for both, with a reason the other person sees. */
@@ -312,6 +322,7 @@ type SessionData = Omit<
   | 'setNetwork'
   | 'sendChat'
   | 'sendTyping'
+  | 'sendPoint'
   | 'sendReaction'
   | 'holdOn'
   | 'setChatOpen'
@@ -359,6 +370,7 @@ const EMPTY_SESSION: SessionData = {
   chatToasts: [],
   chatHandoffPending: false,
   peerTyping: false,
+  peerPoint: null,
   reactions: [],
   moments: [],
   together: null,
@@ -411,6 +423,14 @@ function resolveReply(
   // Not in our list, so it can only have been ours if we sent it earlier; the
   // safe reading is theirs.
   return { wireId: replyTo, text: quote.slice(0, QUOTE_CHARS), mine: false };
+}
+
+/** `x,y` as fractions of the picture, or null for "stopped pointing". */
+function parsePoint(text: string): { x: number; y: number } | null {
+  const [x, y] = text.split(',').map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
 }
 
 /** Float a reaction over the film for a moment, on this side; a burst streams `count` of them. */
@@ -527,6 +547,15 @@ export const useRuya = create<RuyaState>((set, get) => ({
           set({ peerTyping: true });
           if (typingTimer !== null) clearTimeout(typingTimer);
           typingTimer = setTimeout(() => set({ peerTyping: false }), TYPING_LAPSE_MS);
+          return;
+        }
+        if (kind === 'point') {
+          const spot = parsePoint(msg.text);
+          if (pointTimer !== null) clearTimeout(pointTimer);
+          pointTimer = null;
+          set({ peerPoint: spot });
+          // Lapses on its own: a dropped release frame must not leave it lit.
+          if (spot) pointTimer = setTimeout(() => set({ peerPoint: null }), POINT_LAPSE_MS);
           return;
         }
         if (kind === 'reaction') {
@@ -776,6 +805,17 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
   },
 
+  sendPoint(spot) {
+    if (!transport) return;
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text: spot ? `${spot.x.toFixed(4)},${spot.y.toFixed(4)}` : '',
+      at: transport.syncedNow(),
+      kind: 'point',
+    });
+  },
+
   sendReaction(emoji, count = 1) {
     if (!transport || !isReaction(emoji)) return;
     const burst = clampBurst(count);
@@ -871,6 +911,8 @@ export const useRuya = create<RuyaState>((set, get) => ({
     if (togetherTimer !== null) clearTimeout(togetherTimer);
     togetherTimer = null;
     lastReaction = { mine: null, theirs: null };
+    if (pointTimer !== null) clearTimeout(pointTimer);
+    pointTimer = null;
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
     // the room screen while it is set, and VideoPlayer routes back to '/' when
     // it no longer matches the URL (or the object URL is gone).

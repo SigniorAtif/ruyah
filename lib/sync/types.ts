@@ -62,7 +62,7 @@ export type SyncMessage =
     };
 
 /** What a `chat` frame carries. Absent means an ordinary line. */
-export type ChatKind = 'text' | 'reaction' | 'typing' | 'hold';
+export type ChatKind = 'text' | 'reaction' | 'typing' | 'hold' | 'point';
 
 /**
  * Why a session could not proceed.
