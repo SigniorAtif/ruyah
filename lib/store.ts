@@ -11,18 +11,20 @@
  */
 
 import { create } from 'zustand';
-import { MockTransport } from './sync/mockTransport';
 import { WebSocketTransport } from './sync/websocketTransport';
+import { MockTransport } from './sync/mockTransport';
+import { SimulatedWebSocketTransport } from './sync/simulatedTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
 import { prefetchPreferredAudio, prepareSubtitles, releaseFile } from '@/lib/player/audioTracks';
 import { fingerprintFile } from './player/fingerprint';
 import type {
   NetworkConditions,
-  SimulatedTransport,
   SyncErrorCode,
   SyncMessage,
+  SyncTransport,
   TransportState,
 } from './sync/types';
+import { isSimulatedTransport } from './sync/types';
 import { isDevMode, saveDisplayName, saveRelayUrl, validateRelayUrl } from './relayConfig';
 import { clampBurst, isKnownEmoji } from './emoji';
 
@@ -162,11 +164,11 @@ let typingTimer: ReturnType<typeof setTimeout> | null = null;
 let reactionSeq = 0;
 let toastSeq = 0;
 
-let transport: SimulatedTransport | null = null;
+let transport: SyncTransport | null = null;
 let engine: PlayerEngine | null = null;
 let unsubscribers: Array<() => void> = [];
 
-export const getTransport = (): SimulatedTransport | null => transport;
+export const getTransport = (): SyncTransport | null => transport;
 export const getEngine = (): PlayerEngine | null => engine;
 
 export type FingerprintStatus = 'idle' | 'hashing' | 'ready' | 'error';
@@ -394,7 +396,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // empty field is a mistake, not a request for BroadcastChannel — silently
     // running the mock in production would look like a relay that works and
     // then never sees the other person.
-    const useMock = trimmed === '' && devMode;
+    const useMock = __RUYAH_DEV_TOOLS__ && trimmed === '' && devMode;
 
     if (!useMock) {
       const check = validateRelayUrl(trimmed, devMode);
@@ -420,9 +422,13 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // §7.2's authority. Over BroadcastChannel the lobby's choice is the only
     // source of truth; against a relay the server assigns it, and `isAuthority`
     // below is corrected from the `joined` answer.
-    const t: SimulatedTransport = useMock
-      ? new MockTransport({ isAuthority })
-      : new WebSocketTransport({ url: trimmed });
+    // A build without dev tools only ever gets the plain relay transport; the
+    // other two are dropped from it along with their imports (lib/devTools.d.ts).
+    const t: SyncTransport = !__RUYAH_DEV_TOOLS__
+      ? new WebSocketTransport({ url: trimmed })
+      : useMock
+        ? new MockTransport({ isAuthority })
+        : new SimulatedWebSocketTransport({ url: trimmed });
     transport = t;
 
     unsubscribers.push(
@@ -514,7 +520,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
       userId,
       isAuthority,
       transportState: 'connecting',
-      network: t.getNetwork(),
+      network: isSimulatedTransport(t) ? t.getNetwork() : null,
     });
 
     await t.connect(roomCode, userId);
@@ -741,7 +747,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
   },
 
   setNetwork(patch) {
-    if (!transport) return;
+    if (!transport || !isSimulatedTransport(transport)) return;
     transport.setNetwork(patch);
     set({ network: transport.getNetwork() });
   },

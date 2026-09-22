@@ -29,21 +29,25 @@ jobs:
       - run: npm run build
 
   no-dev-surface:
+    # The name predates the build-time flag and is kept because branch
+    # protection requires it. main and dev now carry the same source; what must
+    # never ship is the dev tools in a production bundle, so that is what this
+    # checks, on every branch (lib/devTools.d.ts, scripts/check-dev-tools.mjs).
     name: no dev surface on main
     runs-on: ubuntu-latest
-    # Only the release branch is held to this. dev is supposed to carry the
-    # dev surface; main is not, and the invariant is worth enforcing by machine
-    # rather than by whoever remembers to look.
-    if: github.base_ref == 'main'
     steps:
       - uses: actions/checkout@v4
-      - name: Assert the dev surface is absent
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build with dev tools, and check the markers are there to find
         run: |
-          pattern='DevPanel|MockTransport|SimulatedTransport|NetworkConditions|isSimulatedTransport|legDelayMs|__ruyah|dropoutReport|recordDropoutEvent|debugInjectDrift|setNetwork|SyncIndicator|showDev'
-          if git grep -nE "$pattern" -- ':!docs' ':!.github'; then
-            echo
-            echo "::error::Dev-only code reached a branch bound for main."
-            echo "See docs/BRANCHING.md for what belongs on dev and how to strip it."
-            exit 1
-          fi
-          echo "Clean: no dev surface found."
+          RUYAH_DEV_TOOLS=1 npm run build
+          node scripts/check-dev-tools.mjs present
+      - name: Build without them, and check none reached the bundle
+        run: |
+          rm -rf out
+          npm run build
+          node scripts/check-dev-tools.mjs absent

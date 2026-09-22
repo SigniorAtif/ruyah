@@ -5,12 +5,13 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
-import { DevPanel, OffsetPanel } from './PlayerPanels';
+import { OffsetPanel } from './PlayerPanels';
 import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
-import { DevPanel as NetworkPanel } from './DevPanel';
-import { SyncIndicator } from './SyncIndicator';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
+import { InstrumentsPanel } from './dev/InstrumentsPanel';
+import { NetworkPanel } from './dev/NetworkPanel';
+import { SyncIndicator } from './dev/SyncIndicator';
 import { getDevServerSnapshot, getDevSnapshot, subscribeConfig } from '@/lib/relayConfig';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
 
@@ -141,8 +142,10 @@ export function VideoPlayer({ code }: { code: string }) {
         />
 
         {/* Outside ControlBar on purpose: the sync state stays readable when the
-            bar has faded (rule 6). */}
-        <SyncIndicator />
+            bar has faded (rule 6). Each dev tool is behind __RUYAH_DEV_TOOLS__
+            where it is used, so a build without them drops the imports too
+            (lib/devTools.d.ts). */}
+        {__RUYAH_DEV_TOOLS__ && <SyncIndicator />}
 
         {sameEncode === false && !mismatchDismissed && (
           <div
@@ -170,9 +173,9 @@ export function VideoPlayer({ code }: { code: string }) {
         <Toast barVisible={barVisible} />
 
         {panel === 'offset' && <OffsetPanel />}
-        {panel === 'dev' && devMode && <DevPanel />}
-        {/* The network simulator; renders only over the mock transport. */}
-        <NetworkPanel />
+        {__RUYAH_DEV_TOOLS__ && panel === 'dev' && devMode && <InstrumentsPanel />}
+        {/* The network simulator; renders only over a simulated transport. */}
+        {__RUYAH_DEV_TOOLS__ && <NetworkPanel />}
 
         <FloatingReactions />
         <HoldBanner />
@@ -201,7 +204,7 @@ export function VideoPlayer({ code }: { code: string }) {
           panel={panel}
           onTogglePanel={togglePanel}
           onClosePanel={() => setPanel(null)}
-          showDev={devMode}
+          showDev={__RUYAH_DEV_TOOLS__ && devMode}
         />
 
         <ChatToasts barVisible={barVisible} />

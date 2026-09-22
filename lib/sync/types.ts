@@ -167,9 +167,9 @@ export interface NetworkConditions {
 }
 
 /**
- * A transport that can lie about the network. Only MockTransport implements
- * this; the dev panel codes against it so no simulation types leak into
- * PlayerEngine.
+ * A transport that can lie about the network. Only the dev-tools transports
+ * (MockTransport, SimulatedWebSocketTransport) implement this; the dev panel
+ * codes against it so no simulation types leak into PlayerEngine.
  */
 export interface SimulatedTransport extends SyncTransport {
   getNetwork(): NetworkConditions;

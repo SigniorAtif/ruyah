@@ -78,7 +78,7 @@ export function Lobby() {
   }, []);
 
   const urlCheck = validateRelayUrl(relayUrl, devMode);
-  const usingMock = relayUrl.trim() === '' && devMode;
+  const usingMock = __RUYAH_DEV_TOOLS__ && relayUrl.trim() === '' && devMode;
   const canConnect = usingMock || urlCheck.ok;
   const hasName = name.trim().length > 0;
 
@@ -303,7 +303,7 @@ export function Lobby() {
                   {!urlCheck.ok && !usingMock && (
                     <p className="mt-2 text-[12.5px] leading-[1.7] text-bad">{urlCheck.message}</p>
                   )}
-                  {usingMock && (
+                  {__RUYAH_DEV_TOOLS__ && usingMock && (
                     <p className="mt-2 text-[12.5px] leading-[1.7] text-warn">
                       Dev mode: empty, so this tab talks to other tabs in this browser over the
                       mock transport. No relay is used.
