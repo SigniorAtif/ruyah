@@ -3,15 +3,19 @@
  * query). The lobby uses it to offer a rejoin only while the other person is
  * still there.
  *
- * A relay from before the probe existed refuses it as a bad user id, and an
- * unreachable one never answers; both come back as `unknown`, which the lobby
- * treats as "could not check" rather than "nobody there".
+ * A relay from before the probe existed refuses it as a bad user id, which is
+ * `unsupported`; one that is down or not listening never opens at all, which is
+ * `unreachable`. Neither means the room is empty, and the lobby says which it
+ * was rather than leaving it at "could not check".
  */
 
 export type Presence =
   | { kind: 'there'; others: string[] }
   | { kind: 'empty' }
-  | { kind: 'unknown' };
+  /** Nothing listening there, or it never answered in time. */
+  | { kind: 'unreachable' }
+  /** A relay answered, but not with a presence frame: it predates the probe. */
+  | { kind: 'unsupported' };
 
 const PROBE_TIMEOUT_MS = 4_000;
 
@@ -24,21 +28,25 @@ export function probePresence(relayUrl: string, code: string, asUserId: string):
       );
     } catch {
       // Not a usable address at all, e.g. the empty one that selects the mock.
-      resolve({ kind: 'unknown' });
+      resolve({ kind: 'unreachable' });
       return;
     }
+    let opened = false;
     let settled = false;
     const finish = (p: Presence) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      socket.onmessage = socket.onclose = socket.onerror = null;
+      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null;
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
         socket.close();
       }
       resolve(p);
     };
-    const timer = setTimeout(() => finish({ kind: 'unknown' }), PROBE_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(opened ? { kind: 'unsupported' } : { kind: 'unreachable' }), PROBE_TIMEOUT_MS);
+    socket.onopen = () => {
+      opened = true;
+    };
     socket.onmessage = (ev: MessageEvent) => {
       try {
         const msg = JSON.parse(String(ev.data)) as { type?: string; others?: unknown };
@@ -50,9 +58,12 @@ export function probePresence(relayUrl: string, code: string, asUserId: string):
       } catch {
         /* fall through */
       }
-      finish({ kind: 'unknown' });
+      // It answered with something else: an older relay's refusal frame.
+      finish({ kind: 'unsupported' });
     };
-    socket.onclose = () => finish({ kind: 'unknown' });
-    socket.onerror = () => finish({ kind: 'unknown' });
+    // A socket that opened and then closed was a relay that would not answer;
+    // one that never opened was not there at all.
+    socket.onclose = () => finish(opened ? { kind: 'unsupported' } : { kind: 'unreachable' });
+    socket.onerror = () => finish(opened ? { kind: 'unsupported' } : { kind: 'unreachable' });
   });
 }

@@ -104,8 +104,11 @@ export function RejoinCard() {
                 </>
               )}
               {presence.kind === 'empty' && <span className="text-muted">Nobody is there any more.</span>}
-              {presence.kind === 'unknown' && (
-                <span className="text-muted">Could not check who is there.</span>
+              {presence.kind === 'unreachable' && (
+                <span className="text-muted">That relay is not answering.</span>
+              )}
+              {presence.kind === 'unsupported' && (
+                <span className="text-muted">This relay cannot say who is there.</span>
               )}
             </p>
             {presence.kind !== 'empty' && (
