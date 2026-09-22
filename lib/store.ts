@@ -25,7 +25,14 @@ import type {
   TransportState,
 } from './sync/types';
 import { isSimulatedTransport } from './sync/types';
-import { isDevMode, saveDisplayName, saveRelayUrl, validateRelayUrl } from './relayConfig';
+import {
+  clearLastRoom,
+  isDevMode,
+  saveDisplayName,
+  saveLastRoom,
+  saveRelayUrl,
+  validateRelayUrl,
+} from './relayConfig';
 import { clampBurst, isKnownEmoji } from './emoji';
 
 /** No I/O/0/1 — these get read aloud over the phone. */
@@ -68,8 +75,17 @@ function makeUserId(displayName: string): string {
  * seat. The server's no-authority promotion is what recovers the room in that
  * case.
  */
-function sessionUserId(roomCode: string, displayName: string): string {
+function sessionUserId(roomCode: string, displayName: string, preferred?: string): string {
   const key = `ruyah:user:${roomCode}`;
+  // A rejoin brings the id it had, so the relay hands back the same seat.
+  if (preferred && preferred.split('#')[0] === displayName) {
+    try {
+      sessionStorage.setItem(key, preferred);
+    } catch {
+      /* as below */
+    }
+    return preferred;
+  }
   try {
     const stored = sessionStorage.getItem(key);
     if (stored && stored.split('#')[0] === displayName) return stored;
@@ -237,6 +253,8 @@ interface RuyaState {
     isAuthority: boolean;
     /** Runtime relay endpoint. Empty selects the mock, in dev mode only. */
     relayUrl: string;
+    /** Rejoining: the id used last time, for the same seat and authority. */
+    userId?: string;
   }): Promise<void>;
   setFile(file: File): Promise<void>;
   setReady(ready: boolean): void;
@@ -254,6 +272,8 @@ interface RuyaState {
   setChatOpen(open: boolean): void;
   setNetwork(patch: Partial<NetworkConditions>): void;
   leave(): void;
+  /** Leave on purpose: also forget the room, so the lobby stops offering it. */
+  leaveRoom(): void;
 }
 
 /** Everything in the store that is session state rather than an action. */
@@ -272,6 +292,7 @@ type SessionData = Omit<
   | 'setChatOpen'
   | 'reconnect'
   | 'leave'
+  | 'leaveRoom'
 >;
 
 /**
@@ -386,7 +407,7 @@ function pushReaction(
 export const useRuya = create<RuyaState>((set, get) => ({
   ...EMPTY_SESSION,
 
-  async startSession({ roomCode, displayName, isAuthority, relayUrl }) {
+  async startSession({ roomCode, displayName, isAuthority, relayUrl, userId: rejoinAs }) {
     get().leave();
 
     const trimmed = relayUrl.trim();
@@ -418,7 +439,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // Remembered so the lobby does not ask for it again next visit.
     saveDisplayName(displayName);
 
-    const userId = sessionUserId(roomCode, displayName);
+    const userId = sessionUserId(roomCode, displayName, rejoinAs);
     // §7.2's authority. Over BroadcastChannel the lobby's choice is the only
     // source of truth; against a relay the server assigns it, and `isAuthority`
     // below is corrected from the `joined` answer.
@@ -540,6 +561,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // assumption — a creator rejoining a room they already own, or a joiner
     // landing in an empty one, both come back different from what was clicked.
     set({ transportState: t.state, isAuthority: t.isAuthority });
+    saveLastRoom({ code: roomCode, relayUrl: trimmed, displayName, userId, at: Date.now() });
   },
 
   async setFile(file) {
@@ -750,6 +772,11 @@ export const useRuya = create<RuyaState>((set, get) => ({
     if (!transport || !isSimulatedTransport(transport)) return;
     transport.setNetwork(patch);
     set({ network: transport.getNetwork() });
+  },
+
+  leaveRoom() {
+    clearLastRoom();
+    get().leave();
   },
 
   leave() {
