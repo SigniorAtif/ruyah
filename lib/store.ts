@@ -145,6 +145,19 @@ export interface ChatMessage {
   reply?: { wireId: string; text: string; mine: boolean } | null;
 }
 
+/** A reaction as it happened in the film, kept for the session: the seek bar's marks. */
+export interface ReactionMoment {
+  emoji: string;
+  mine: boolean;
+  /** Film time it was sent at, seconds. */
+  position: number;
+  /** Copies in the burst; one for a tap. */
+  count: number;
+}
+
+/** The session's reactions are few, but a long film with a lot of bursts is bounded here. */
+const MOMENTS_KEEP = 2_000;
+
 export interface FloatingReaction {
   id: number;
   emoji: string;
@@ -232,6 +245,8 @@ interface RuyaState {
   /** The other person is writing something. */
   peerTyping: boolean;
   reactions: FloatingReaction[];
+  /** Every reaction this session, both sides, with where in the film it was. */
+  moments: ReactionMoment[];
   /** A hold-on pause in force, and who asked for it. Cleared on the next play. */
   hold: { mine: boolean; reason: string } | null;
   /**
@@ -335,6 +350,7 @@ const EMPTY_SESSION: SessionData = {
   chatHandoffPending: false,
   peerTyping: false,
   reactions: [],
+  moments: [],
   hold: null,
   chatLanded: [],
 
@@ -404,6 +420,13 @@ function pushReaction(
   for (let i = 1; i < count; i++) setTimeout(float, i * BURST_GAP_MS);
 }
 
+function logMoment(
+  set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
+  moment: ReactionMoment,
+): void {
+  set((s) => ({ moments: [...s.moments, moment].slice(-MOMENTS_KEEP) }));
+}
+
 export const useRuya = create<RuyaState>((set, get) => ({
   ...EMPTY_SESSION,
 
@@ -465,7 +488,12 @@ export const useRuya = create<RuyaState>((set, get) => ({
           return;
         }
         if (kind === 'reaction') {
-          if (isReaction(msg.text)) pushReaction(set, msg.text, false, clampBurst(msg.count));
+          if (!isReaction(msg.text)) return;
+          const count = clampBurst(msg.count);
+          pushReaction(set, msg.text, false, count);
+          if (Number.isFinite(msg.position)) {
+            logMoment(set, { emoji: msg.text, mine: false, position: msg.position as number, count });
+          }
           return;
         }
         const text = msg.text.trim().slice(0, CHAT_MAX_CHARS);
@@ -708,16 +736,18 @@ export const useRuya = create<RuyaState>((set, get) => ({
   sendReaction(emoji, count = 1) {
     if (!transport || !isReaction(emoji)) return;
     const burst = clampBurst(count);
+    const position = engine?.getStatus().position ?? 0;
     transport.send({
       type: 'chat',
       userId: get().userId,
       text: emoji,
       at: transport.syncedNow(),
-      position: engine?.getStatus().position ?? 0,
+      position,
       kind: 'reaction',
       ...(burst > 1 && { count: burst }),
     });
     pushReaction(set, emoji, true, burst);
+    logMoment(set, { emoji, mine: true, position, count: burst });
   },
 
   holdOn(raw) {
