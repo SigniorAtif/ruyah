@@ -191,6 +191,12 @@ const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let typingTimer: ReturnType<typeof setTimeout> | null = null;
 let reactionSeq = 0;
+/** The latest reaction from each side, by arrival here, for spotting a match. */
+let lastReaction: { mine: { emoji: string; at: number } | null; theirs: { emoji: string; at: number } | null } = {
+  mine: null,
+  theirs: null,
+};
+let togetherTimer: ReturnType<typeof setTimeout> | null = null;
 let toastSeq = 0;
 
 let transport: SyncTransport | null = null;
@@ -247,6 +253,10 @@ interface RuyaState {
   reactions: FloatingReaction[];
   /** Every reaction this session, both sides, with where in the film it was. */
   moments: ReactionMoment[];
+  /** Both of you just sent the same reaction; shown big for a moment. */
+  together: { id: number; emoji: string } | null;
+  /** Every such match this session, with where in the film it was. */
+  matches: Array<{ emoji: string; position: number }>;
   /** A hold-on pause in force, and who asked for it. Cleared on the next play. */
   hold: { mine: boolean; reason: string } | null;
   /**
@@ -351,6 +361,8 @@ const EMPTY_SESSION: SessionData = {
   peerTyping: false,
   reactions: [],
   moments: [],
+  together: null,
+  matches: [],
   hold: null,
   chatLanded: [],
 
@@ -418,6 +430,36 @@ function pushReaction(
   };
   float();
   for (let i = 1; i < count; i++) setTimeout(float, i * BURST_GAP_MS);
+}
+
+/** Same reaction from both sides within this long reads as one shared moment. */
+const MATCH_WINDOW_MS = 1_500;
+/** How long the shared moment holds the screen. */
+const TOGETHER_MS = 2_400;
+
+/**
+ * Each side spots the match itself, from what it sent and what arrived, so
+ * nothing extra crosses the network. Both sides see the same two reactions and
+ * so, bar a match right at the edge of the window, both see the moment.
+ */
+function noticeMatch(
+  set: (patch: Partial<RuyaState> | ((s: RuyaState) => Partial<RuyaState>)) => void,
+  emoji: string,
+  mine: boolean,
+  position: number,
+): void {
+  const now = Date.now();
+  const other = mine ? lastReaction.theirs : lastReaction.mine;
+  if (other && other.emoji === emoji && now - other.at <= MATCH_WINDOW_MS) {
+    // Used up: a third copy inside the window is not a second match.
+    lastReaction = { mine: null, theirs: null };
+    const id = ++reactionSeq;
+    set((s) => ({ together: { id, emoji }, matches: [...s.matches, { emoji, position }] }));
+    if (togetherTimer !== null) clearTimeout(togetherTimer);
+    togetherTimer = setTimeout(() => set((s) => (s.together?.id === id ? { together: null } : {})), TOGETHER_MS);
+    return;
+  }
+  lastReaction = { ...lastReaction, [mine ? 'mine' : 'theirs']: { emoji, at: now } };
 }
 
 function logMoment(
@@ -491,6 +533,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
           if (!isReaction(msg.text)) return;
           const count = clampBurst(msg.count);
           pushReaction(set, msg.text, false, count);
+          noticeMatch(set, msg.text, false, get().status?.position ?? 0);
           if (Number.isFinite(msg.position)) {
             logMoment(set, { emoji: msg.text, mine: false, position: msg.position as number, count });
           }
@@ -748,6 +791,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
     pushReaction(set, emoji, true, burst);
     logMoment(set, { emoji, mine: true, position, count: burst });
+    noticeMatch(set, emoji, true, position);
   },
 
   holdOn(raw) {
@@ -824,6 +868,9 @@ export const useRuya = create<RuyaState>((set, get) => ({
     toastTimer = null;
     if (typingTimer !== null) clearTimeout(typingTimer);
     typingTimer = null;
+    if (togetherTimer !== null) clearTimeout(togetherTimer);
+    togetherTimer = null;
+    lastReaction = { mine: null, theirs: null };
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
     // the room screen while it is set, and VideoPlayer routes back to '/' when
     // it no longer matches the URL (or the object URL is gone).
