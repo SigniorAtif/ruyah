@@ -6,7 +6,7 @@ import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
-import { FloatingReactions, HoldBanner, ResumePrompt, TogetherMoment } from './StageNotes';
+import { FloatingReactions, HoldBanner, Recap, ResumePrompt, TogetherMoment } from './StageNotes';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
 import { InstrumentsPanel } from './dev/InstrumentsPanel';
@@ -181,6 +181,7 @@ export function VideoPlayer({ code }: { code: string }) {
         <TogetherMoment />
         <HoldBanner />
         <ResumePrompt />
+        <Recap />
 
         {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 

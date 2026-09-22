@@ -54,3 +54,22 @@ export function binMoments(
       lines: b.lines,
     }));
 }
+
+/** The film's busiest stretches, for the recap: most copies and lines, then earliest. */
+export function topMoments(bins: readonly MomentBin[], n: number): MomentBin[] {
+  return [...bins]
+    .sort((a, b) => b.copies + b.lines * 2 - (a.copies + a.lines * 2) || a.first - b.first)
+    .slice(0, n)
+    .sort((a, b) => a.first - b.first);
+}
+
+/** Someone's most-sent reaction and how many copies, or null if they sent none. */
+export function favourite(
+  moments: readonly { emoji: string; count: number }[],
+): { emoji: string; copies: number } | null {
+  const tally = new Map<string, number>();
+  for (const m of moments) tally.set(m.emoji, (tally.get(m.emoji) ?? 0) + m.count);
+  let best: { emoji: string; copies: number } | null = null;
+  for (const [emoji, copies] of tally) if (!best || copies > best.copies) best = { emoji, copies };
+  return best;
+}

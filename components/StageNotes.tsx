@@ -1,9 +1,10 @@
 'use client';
 
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
 import { resumePoint, savePosition } from '@/lib/player/resume';
+import { binMoments, favourite, topMoments } from '@/lib/moments';
 import { getEngine, nameOf, SCATTER_ABOVE, useRuya } from '@/lib/store';
 
 /**
@@ -110,6 +111,138 @@ export function TogetherMoment() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+/** Stretches the recap looks for moments in; coarser than the seek bar's. */
+const RECAP_BINS = 40;
+
+/**
+ * When the film ends: the moments you both reacted to most, each person's
+ * favourite reaction, and how much was said. Worked out on each side from the
+ * same session log, so both see the same card with "you" and "them" swapped.
+ * Jumping to a moment is an ordinary seek, so both players go.
+ */
+export function Recap() {
+  const status = useRuya((s) => s.status);
+  const moments = useRuya((s) => s.moments);
+  const messages = useRuya((s) => s.messages);
+  const matches = useRuya((s) => s.matches);
+  const peerUserId = useRuya((s) => s.peerUserId);
+  // Keyed by the duration, so a new film brings it back; any play hides it.
+  const [dismissedFor, setDismissedFor] = useState<number | null>(null);
+
+  const duration = status?.duration ?? 0;
+  const ended = !!status && duration > 0 && !status.playing && status.position >= duration - 1;
+  const lines = messages.filter((m) => !m.hold);
+  const top = useMemo(
+    () =>
+      topMoments(
+        binMoments(
+          moments,
+          lines.filter((m) => m.position !== null).map((m) => m.position as number),
+          duration,
+          RECAP_BINS,
+        ),
+        3,
+      ),
+    [moments, lines, duration],
+  );
+  if (!ended && dismissedFor !== null) setDismissedFor(null);
+  const visible = ended && dismissedFor !== duration;
+
+  const them = nameOf(peerUserId);
+  const mine = moments.filter((m) => m.mine);
+  const theirs = moments.filter((m) => !m.mine);
+  const people = [
+    { who: 'you', fav: favourite(mine), copies: mine.reduce((n, m) => n + m.count, 0), said: lines.filter((m) => m.mine).length },
+    { who: them, fav: favourite(theirs), copies: theirs.reduce((n, m) => n + m.count, 0), said: lines.filter((m) => !m.mine).length },
+  ];
+
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          key="recap"
+          role="dialog"
+          aria-label="Recap"
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 10, transition: { duration: 0.25 } }}
+          transition={{ type: 'spring', stiffness: 260, damping: 28, delay: 0.6 }}
+          className="absolute left-1/2 top-1/2 z-[8] max-h-[calc(100%-48px)] w-[min(440px,calc(100%-32px))] overflow-y-auto rounded border border-gold/40 bg-[rgba(20,19,18,0.95)] px-7 py-6 backdrop-blur-md [scrollbar-width:none]"
+          style={{ x: '-50%', y: '-50%' }}
+        >
+          <p className="kicker mb-1.5">the end</p>
+          <p className="mb-5 font-display text-[30px] font-light italic leading-tight">Watched together.</p>
+
+          <div className="mb-5 grid grid-cols-2 gap-4 border-y border-line-soft py-4">
+            {people.map((p) => (
+              <div key={p.who}>
+                <p className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] text-faint">{p.who}</p>
+                <p className="mb-1 font-display text-[22px]">
+                  {p.fav ? (
+                    <>
+                      {p.fav.emoji}
+                      <span className="ml-1.5 font-mono text-[11px] text-muted">×{p.fav.copies}</span>
+                    </>
+                  ) : (
+                    <span className="text-[15px] italic text-muted">no reactions</span>
+                  )}
+                </p>
+                <p className="font-mono text-[10.5px] tabular-nums text-muted">
+                  {p.copies} {p.copies === 1 ? 'reaction' : 'reactions'} · {p.said} {p.said === 1 ? 'line' : 'lines'}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {matches.length > 0 && (
+            <p className="mb-4 font-display text-[16px] text-muted">
+              You reacted <span className="text-gold-hi">together</span> {matches.length}{' '}
+              {matches.length === 1 ? 'time' : 'times'}
+              <span className="ml-2">{[...new Set(matches.map((m) => m.emoji))].slice(0, 5).join('')}</span>
+            </p>
+          )}
+
+          {top.length > 0 && (
+            <>
+              <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-faint">the moments</p>
+              <ul className="mb-5 flex flex-col gap-1">
+                {top.map((b) => (
+                  <li key={b.index}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        getEngine()?.seek(Math.max(0, b.first - 3));
+                        setDismissedFor(duration);
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-3 rounded border-0 bg-transparent px-2 py-1.5 text-left transition-colors duration-200 hover:bg-foreground/5"
+                    >
+                      <span className="w-12 font-mono text-[12px] tabular-nums text-gold-hi">{formatClock(b.first)}</span>
+                      <span className="text-[17px]">{b.emoji.slice(0, 4).map(([e]) => e).join(' ')}</span>
+                      {b.lines > 0 && (
+                        <span className="ml-auto font-mono text-[10.5px] text-muted">
+                          {b.lines} {b.lines === 1 ? 'line' : 'lines'}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setDismissedFor(duration)}
+            className="cursor-pointer border-0 bg-transparent p-0 font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted transition-colors duration-300 hover:text-foreground"
+          >
+            close
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }
 
