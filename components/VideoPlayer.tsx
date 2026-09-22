@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
+import { FramePointer } from './FramePointer';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
 import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
@@ -27,6 +28,8 @@ export function VideoPlayer({ code }: { code: string }) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  // Held while P is down: a dot on the frame that the other person sees too.
+  const [pointing, setPointing] = useState(false);
   // One panel at a time: opening any of them closes the rest.
   const [panel, setPanel] = useState<PlayerPanel | null>(null);
   const togglePanel = (p: PlayerPanel) => setPanel((v) => (v === p ? null : p));
@@ -52,6 +55,7 @@ export function VideoPlayer({ code }: { code: string }) {
       setPanel(null);
     },
     onHold: () => togglePanel('hold'),
+    onPoint: setPointing,
     onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
 
@@ -177,6 +181,8 @@ export function VideoPlayer({ code }: { code: string }) {
         {/* The network simulator; renders only over a simulated transport. */}
         {__RUYAH_DEV_TOOLS__ && <NetworkPanel />}
 
+        <FramePointer videoRef={videoRef} pointing={pointing} />
+
         <FloatingReactions />
         <HoldBanner />
         <ResumePrompt />
@@ -228,6 +234,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['0 – 9', 'jump to 0–90%'],
   ['C', 'show / hide chat'],
   ['H', 'hold on, for both'],
+  ['P (hold)', 'point at the frame'],
   ['?', 'this sheet'],
 ];
 
