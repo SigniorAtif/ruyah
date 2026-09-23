@@ -429,7 +429,12 @@ export class WebSocketTransport implements SyncTransport {
   private onPeerEvent(msg: ServerMessage & { type: 'peer' }): void {
     if (msg.event === 'joined') {
       this.peerIdValue = msg.userId;
-      this.setPeerPresent(true);
+      // Announced every time, not only when presence changes. Someone who
+      // reclaims their seat (§3: same userId, e.g. after a refresh) arrives
+      // before their old socket's `left` is ever seen, so presence never
+      // changed — and the store would skip re-announcing `ready`, leaving them
+      // waiting on a room screen for a peer who thinks they are already set.
+      this.notifyPeerPresent(true);
       // They may have missed whatever we announced before they arrived; the
       // store re-announces `ready` from the presence callback.
       this.clock.kick();
@@ -504,6 +509,10 @@ export class WebSocketTransport implements SyncTransport {
 
   protected setPeerPresent(present: boolean): void {
     if (this.peerPresentValue === present) return;
+    this.notifyPeerPresent(present);
+  }
+
+  private notifyPeerPresent(present: boolean): void {
     this.peerPresentValue = present;
     for (const handler of this.presenceHandlers) {
       handler(present, this.peerIdValue);
