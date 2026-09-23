@@ -120,6 +120,7 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
     getQuickEmojiServerSnapshot,
   );
   const lastTypingSent = useRef(0);
+  const composerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const them = nameOf(peerUserId);
@@ -189,6 +190,23 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
     setStartedAt(null);
     setTray(null);
   };
+
+  /*
+   * A press outside the composer closes the open tray. It is a document
+   * listener rather than a backdrop element because everything here sits
+   * inside animated, transformed ancestors, against which a `fixed` overlay
+   * resolves to the composer strip instead of the viewport — which left the
+   * log and the film unable to dismiss it. Keeping the composer itself out of
+   * it is what lets one tray hand over to the other in a single click.
+   */
+  useEffect(() => {
+    if (!tray) return;
+    const onPress = (e: PointerEvent) => {
+      if (!composerRef.current?.contains(e.target as Node)) setTray(null);
+    };
+    document.addEventListener('pointerdown', onPress);
+    return () => document.removeEventListener('pointerdown', onPress);
+  }, [tray]);
 
   /** Scroll to the line a reply points at and flash it, if it is still here. */
   const showOriginal = (wire: string) => {
@@ -353,36 +371,29 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
         </AnimatePresence>
       </motion.div>
 
-      <div className="relative flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
+      <div
+        ref={composerRef}
+        className="relative flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]"
+      >
         <AnimatePresence>
           {tray && (
-            <>
-              {/* Anywhere else closes it, including the film behind the aside. */}
-              <button
-                type="button"
-                aria-hidden
-                tabIndex={-1}
-                onClick={() => setTray(null)}
-                className="fixed inset-0 z-10 cursor-default border-0 bg-transparent p-0"
-              />
-              <motion.div
-                key={tray}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') setTray(null);
-                }}
-                className="absolute bottom-full left-[22px] right-[22px] z-20 mb-2.5 rounded border border-line bg-[rgba(20,19,18,0.97)] p-2.5 shadow-[0_18px_48px_rgba(11,11,10,0.62)] backdrop-blur-md"
-              >
-                {tray === 'emoji' ? (
-                  <EmojiTray onPick={insertEmoji} />
-                ) : (
-                  <StickerTray onPick={sendSticker} />
-                )}
-              </motion.div>
-            </>
+            <motion.div
+              key={tray}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setTray(null);
+              }}
+              className="absolute bottom-full left-[22px] right-[22px] z-20 mb-2.5 rounded border border-line bg-[rgba(20,19,18,0.97)] p-2.5 shadow-[0_18px_48px_rgba(11,11,10,0.62)] backdrop-blur-md"
+            >
+              {tray === 'emoji' ? (
+                <EmojiTray onPick={insertEmoji} />
+              ) : (
+                <StickerTray onPick={sendSticker} />
+              )}
+            </motion.div>
           )}
         </AnimatePresence>
         <AnimatePresence initial={false}>
