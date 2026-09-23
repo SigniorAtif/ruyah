@@ -168,8 +168,18 @@ export function Lobby() {
             your name
           </label>
           <div className="relative">
+            {/*
+              The prerendered HTML says empty and undisabled, because on the
+              server there is no localStorage and nothing typed. Anything that
+              touches the document before React reaches it — a password manager,
+              the browser restoring what was typed before a reload — makes that
+              a mismatch React reports and then cannot patch. The post-hydration
+              render from the store is what actually decides these, so the
+              warning is noise here and the fields are marked as such.
+            */}
             <input
               id="name"
+              suppressHydrationWarning
               value={name}
               onChange={(e) => {
                 setDraftName(e.target.value);
@@ -192,6 +202,7 @@ export function Lobby() {
 
         <button
           type="button"
+          suppressHydrationWarning
           disabled={!hasName || busy}
           onClick={() => void begin(randomRoomCode(), true)}
           className="cursor-pointer rounded border border-gold bg-transparent px-[22px] py-[17px] text-center font-display text-[19px] font-semibold text-gold-hi transition-[background-color,color,transform,opacity] duration-500 hover:bg-gold/15 hover:text-foreground active:scale-[.985]"
@@ -213,6 +224,7 @@ export function Lobby() {
             <div className="relative">
               <input
                 id="code"
+                suppressHydrationWarning
                 value={joinCode}
                 onChange={(e) => {
                   setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6));
@@ -237,6 +249,7 @@ export function Lobby() {
           </div>
           <button
             type="button"
+            suppressHydrationWarning
             disabled={!hasName || joinCode.length !== 6 || busy}
             onClick={join}
             className="cursor-pointer rounded border border-line-strong bg-transparent px-[26px] py-[15px] font-display text-base font-semibold transition-[border-color,color,transform,opacity] duration-500 hover:border-gold hover:text-gold-hi active:scale-[.985]"
