@@ -68,15 +68,18 @@ export function RejoinCard() {
     }
   };
 
-  // Only shown when the relay says someone is in there: an empty room, a relay
-  // that is down and a relay too old to answer all look the same from here —
-  // nobody to go back to — and the check runs again every few seconds, so the
-  // card appears by itself if they turn up.
+  // A room the relay says is empty is not worth offering: there is nobody to go
+  // back to, and the check runs again every few seconds, so the card appears by
+  // itself when they turn up. A relay that cannot answer — down, or older than
+  // the probe — is a different thing: it has not said the room is empty, so the
+  // offer stands, without the claim that anyone is there.
   const there = presence?.kind === 'there' ? presence : null;
+  const unchecked = presence?.kind === 'unreachable' || presence?.kind === 'unsupported';
+  const show = !!there || unchecked;
 
   return (
     <AnimatePresence initial={false}>
-      {last && there && (
+      {last && show && (
         <motion.div
           key={last.code}
           initial={{ opacity: 0, height: 0 }}
@@ -85,7 +88,7 @@ export function RejoinCard() {
           transition={{ duration: 0.45, ease: [0.2, 0.8, 0.2, 1] }}
           className="overflow-hidden"
         >
-          <div className="rounded border border-gold/45 px-5 py-4">
+          <div className={`rounded border px-5 py-4 ${there ? 'border-gold/45' : 'border-line'}`}>
             <div className="mb-1.5 flex items-baseline justify-between gap-3">
               <p className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-kicker">
                 last room · {last.code}
@@ -100,13 +103,25 @@ export function RejoinCard() {
               </button>
             </div>
             <p className="font-display text-xl">
-              <span className="text-gold-hi">{nameOf(there.others[0])}</span> is still there.
+              {there ? (
+                <>
+                  <span className="text-gold-hi">{nameOf(there.others[0])}</span> is still there.
+                </>
+              ) : presence?.kind === 'unreachable' ? (
+                <span className="text-muted">That relay is not answering.</span>
+              ) : (
+                <span className="text-muted">This relay cannot say who is there.</span>
+              )}
             </p>
             <button
               type="button"
               onClick={rejoin}
               disabled={busy}
-              className="mt-3.5 w-full cursor-pointer rounded border border-gold bg-transparent px-4 py-2.5 font-display text-base font-semibold text-gold-hi transition-[background-color,color,transform,opacity] duration-500 hover:bg-gold/15 hover:text-foreground active:scale-[.985]"
+              className={`mt-3.5 w-full cursor-pointer rounded border bg-transparent px-4 py-2.5 font-display text-base font-semibold transition-[background-color,border-color,color,transform,opacity] duration-500 active:scale-[.985] ${
+                there
+                  ? 'border-gold text-gold-hi hover:bg-gold/15 hover:text-foreground'
+                  : 'border-line-strong text-foreground hover:border-gold hover:text-gold-hi'
+              }`}
             >
               {busy ? 'Rejoining…' : `Rejoin as ${last.displayName}`}
             </button>
