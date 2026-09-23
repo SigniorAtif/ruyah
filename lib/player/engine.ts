@@ -77,6 +77,11 @@ const HIDDEN_DROPOUT_MS = 30_000;
 /** After returning to the foreground, let one heartbeat try to land first. */
 const VISIBILITY_GRACE_MS = 3_000;
 /** §7.3 guard 3 floor. */
+/** Landing on someone mid-film only happens from a standing start near zero. */
+const ADOPT_FROM_S = 2;
+/** And only if they are properly into it, not a second ahead of us. */
+const ADOPT_MIN_S = 5;
+
 const MIN_DEADBAND_S = 0.15;
 /**
  * §7.3 guard 3 ceiling. The deadband is scaled by measured jitter, and nothing
@@ -297,6 +302,11 @@ export class PlayerEngine {
   private addedTracks: Array<{ el: HTMLTrackElement; url: string }> = [];
   /** Chromium's audio-language switching; null where the browser does it natively. */
   private audioChoice: AudioTrackController | null = null;
+  /**
+   * Waiting to land where the other person already is (§4.1: never skip
+   * footage they have not seen — this only ever moves US).
+   */
+  private adoptPending = false;
   /** Embedded subtitles being read out of the file, 0..1; null when idle. */
   private subtitlesPreparing: number | null = null;
   private subtitleRun = 0;
@@ -332,6 +342,9 @@ export class PlayerEngine {
   attach(video: HTMLVideoElement): () => void {
     this.detach();
     this.video = video;
+    // A fresh attach is either the start of a session or someone coming back to
+    // one already running; the first heartbeat decides which.
+    this.adoptPending = true;
 
     const on = <K extends keyof HTMLMediaElementEventMap>(
       type: K,
@@ -563,6 +576,8 @@ export class PlayerEngine {
   play(): void {
     const v = this.video;
     if (!v || this.mediaError) return;
+    // Pressing play is a decision about where we are; stop waiting to be moved.
+    this.adoptPending = false;
     if (this.commitPendingSeekAs(true)) return;
 
     // §6.2: P is the MINIMUM, because nobody can start early — waiting is only
@@ -633,6 +648,7 @@ export class PlayerEngine {
   seek(position: number, playAfter?: boolean): void {
     const v = this.video;
     if (!v) return;
+    this.adoptPending = false;
     this.clearPendingSeek();
     const wasPlaying = playAfter ?? !v.paused;
     const executeAt = this.now() + this.seekLeadMs();
@@ -1027,6 +1043,21 @@ export class PlayerEngine {
     // Project forward — never use the raw position. "I was at P at time T" means
     // the same thing whether it arrives in 40ms or 900ms (§7.1).
     const peerPos = this.projectPeer(this.peer);
+
+    if (this.adoptPending) {
+      this.adoptPending = false;
+      // Coming back to a session that kept running: land where they are rather
+      // than sitting at the start. Without this the returning player is the one
+      // the other corrects toward — and if they came back holding authority
+      // (§3's sticky seat), pressing play would drag the other person back to
+      // the beginning of the film.
+      if (v.paused && v.currentTime < ADOPT_FROM_S && peerPos > ADOPT_MIN_S) {
+        this.suppress();
+        v.currentTime = peerPos;
+        this.notify();
+        return;
+      }
+    }
     const drift = v.currentTime - peerPos + this.manualOffsetSec; // + = we're ahead
     this.driftMs = drift * 1000;
 

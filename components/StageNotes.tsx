@@ -121,6 +121,8 @@ export function ResumePrompt() {
   const position = useRuya((s) => s.status?.position ?? 0);
   const duration = useRuya((s) => s.status?.duration ?? 0);
   const playing = useRuya((s) => s.status?.playing ?? false);
+  // Where the other person already is, if they kept watching without us.
+  const peerPosition = useRuya((s) => s.status?.peerPosition ?? null);
   const showToast = useRuya((s) => s.showToast);
   // Read once per film: the offer is about the last session, not this one.
   const [offer, setOffer] = useState<{ fp: string; at: number | null } | null>(null);
@@ -143,8 +145,11 @@ export function ResumePrompt() {
     }
   }, [fingerprint, position, duration, playing]);
 
-  // Past the opening, the moment has gone either way.
-  const visible = at !== null && !dismissed && position < 10;
+  // Past the opening, the moment has gone either way. And if the other person
+  // is already into the film, the engine puts us where they are instead — an
+  // old bookmark is not what this session is about any more.
+  const joiningThem = peerPosition !== null && peerPosition > 10;
+  const visible = at !== null && !dismissed && position < 10 && !joiningThem;
 
   return (
     <AnimatePresence>
