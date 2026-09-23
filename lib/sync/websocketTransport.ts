@@ -76,17 +76,17 @@ export interface WebSocketTransportOptions {
 export class WebSocketTransport implements SyncTransport {
   private readonly url: string;
 
-  private socket: WebSocket | null = null;
+  protected socket: WebSocket | null = null;
   private roomId = '';
   private userId = '';
 
   private isAuthorityValue = false;
   private peerIdValue: string | null = null;
-  private peerPresentValue = false;
-  private stateValue: TransportState = 'disconnected';
+  protected peerPresentValue = false;
+  protected stateValue: TransportState = 'disconnected';
 
   /** Set while a fatal error has ended the session; blocks all reconnection. */
-  private fatal = false;
+  protected fatal = false;
   /**
    * Did the current socket complete its handshake, and did the relay answer
    * with `joined`? Together these separate "nothing answered" from "something
@@ -98,12 +98,12 @@ export class WebSocketTransport implements SyncTransport {
    * `onopen` fired — so that, rather than the close code, is what this splits on.
    */
   private everOpened = false;
-  private everJoined = false;
-  private reportedError: SyncErrorCode | null = null;
+  protected everJoined = false;
+  protected reportedError: SyncErrorCode | null = null;
   /** True once the caller has asked to be disconnected, so retries stop. */
-  private closedByUs = false;
+  protected closedByUs = false;
 
-  private attempt = 0;
+  protected attempt = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private connectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -118,7 +118,7 @@ export class WebSocketTransport implements SyncTransport {
     (code: SyncErrorCode, message: string) => void
   >();
 
-  private readonly clock: ClockSync;
+  protected readonly clock: ClockSync;
 
   /** Resolves connect() once the room has answered, or once it clearly won't. */
   private settleConnect: (() => void) | null = null;
@@ -173,8 +173,8 @@ export class WebSocketTransport implements SyncTransport {
     if (this.stateValue !== 'disconnected') this.setState('disconnected');
   }
 
-  private open(): void {
-    if (this.fatal || this.closedByUs) return;
+  protected open(): void {
+    if (this.fatal || this.closedByUs || !this.linkUp()) return;
 
     const url = `${this.url}?room=${encodeURIComponent(
       this.roomId,
@@ -233,7 +233,7 @@ export class WebSocketTransport implements SyncTransport {
 
     socket.onmessage = (ev: MessageEvent) => {
       if (this.socket !== socket) return;
-      this.receive(ev.data);
+      this.onSocketData(ev.data);
     };
 
     socket.onerror = () => {
@@ -277,7 +277,7 @@ export class WebSocketTransport implements SyncTransport {
           'The relay accepted the connection but did not answer. Check that the address points at a ruyah relay.',
         );
       }
-      if (this.closedByUs) {
+      if (this.closedByUs || !this.linkUp()) {
         this.resolveConnect();
         this.setState('disconnected');
         return;
@@ -287,7 +287,7 @@ export class WebSocketTransport implements SyncTransport {
     };
   }
 
-  private teardownSocket(): void {
+  protected teardownSocket(): void {
     const socket = this.socket;
     if (!socket) return;
     this.socket = null;
@@ -305,7 +305,7 @@ export class WebSocketTransport implements SyncTransport {
 
   /** §5: exponential backoff, 500ms → 8s ceiling, with jitter. */
   private scheduleRetry(): void {
-    if (this.fatal || this.closedByUs) return;
+    if (this.fatal || this.closedByUs || !this.linkUp()) return;
     this.clearRetry();
 
     const base = Math.min(
@@ -325,12 +325,12 @@ export class WebSocketTransport implements SyncTransport {
     }, delay);
   }
 
-  private clearConnectTimer(): void {
+  protected clearConnectTimer(): void {
     if (this.connectTimer !== null) clearTimeout(this.connectTimer);
     this.connectTimer = null;
   }
 
-  private clearRetry(): void {
+  protected clearRetry(): void {
     if (this.retryTimer !== null) clearTimeout(this.retryTimer);
     this.retryTimer = null;
   }
@@ -349,7 +349,22 @@ export class WebSocketTransport implements SyncTransport {
     this.writeNow(msg);
   }
 
-  private writeNow(msg: SyncMessage): void {
+  // ------------------------------------------------------------------ hooks
+  // Seams for the dev-only network simulator (lib/sync/simulatedTransport.ts),
+  // which overrides them in a subclass. Here they are pass-throughs, so a build
+  // without dev tools carries none of the simulation.
+
+  /** Whether this client's link is up. A real one always is; the socket says the rest. */
+  protected linkUp(): boolean {
+    return true;
+  }
+
+  /** One frame off the socket, before it is parsed. */
+  protected onSocketData(data: unknown): void {
+    this.receive(data);
+  }
+
+  protected writeNow(msg: SyncMessage): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(msg));
@@ -357,7 +372,7 @@ export class WebSocketTransport implements SyncTransport {
 
   // ---------------------------------------------------------------- receiving
 
-  private receive(data: unknown): void {
+  protected receive(data: unknown): void {
     if (typeof data !== 'string') return;
 
     let msg: Incoming;
@@ -414,7 +429,12 @@ export class WebSocketTransport implements SyncTransport {
   private onPeerEvent(msg: ServerMessage & { type: 'peer' }): void {
     if (msg.event === 'joined') {
       this.peerIdValue = msg.userId;
-      this.setPeerPresent(true);
+      // Announced every time, not only when presence changes. Someone who
+      // reclaims their seat (§3: same userId, e.g. after a refresh) arrives
+      // before their old socket's `left` is ever seen, so presence never
+      // changed — and the store would skip re-announcing `ready`, leaving them
+      // waiting on a room screen for a peer who thinks they are already set.
+      this.notifyPeerPresent(true);
       // They may have missed whatever we announced before they arrived; the
       // store re-announces `ready` from the presence callback.
       this.clock.kick();
@@ -487,15 +507,19 @@ export class WebSocketTransport implements SyncTransport {
     };
   }
 
-  private setPeerPresent(present: boolean): void {
+  protected setPeerPresent(present: boolean): void {
     if (this.peerPresentValue === present) return;
+    this.notifyPeerPresent(present);
+  }
+
+  private notifyPeerPresent(present: boolean): void {
     this.peerPresentValue = present;
     for (const handler of this.presenceHandlers) {
       handler(present, this.peerIdValue);
     }
   }
 
-  private setState(next: TransportState): void {
+  protected setState(next: TransportState): void {
     if (this.stateValue === next) return;
     this.stateValue = next;
     for (const handler of this.stateHandlers) handler(next);

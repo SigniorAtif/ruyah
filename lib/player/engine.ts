@@ -77,6 +77,11 @@ const HIDDEN_DROPOUT_MS = 30_000;
 /** After returning to the foreground, let one heartbeat try to land first. */
 const VISIBILITY_GRACE_MS = 3_000;
 /** §7.3 guard 3 floor. */
+/** Landing on someone mid-film only happens from a standing start near zero. */
+const ADOPT_FROM_S = 2;
+/** And only if they are properly into it, not a second ahead of us. */
+const ADOPT_MIN_S = 5;
+
 const MIN_DEADBAND_S = 0.15;
 /**
  * §7.3 guard 3 ceiling. The deadband is scaled by measured jitter, and nothing
@@ -251,6 +256,14 @@ export class PlayerEngine {
   /** Her measured loss, from heartbeats; ours may not be the worse of the two. */
   private peerLossRate = 0;
 
+  // ---- §8 diagnostics. Cheap counters plus a ring buffer, so the state that
+  // led to a peer-lost is still there to read after it has latched.
+  private heartbeatsSent = 0;
+  private messagesReceived = 0;
+  private lastInboundAt = 0;
+  private lastInboundType = 'none';
+  private probesSinceLost = 0;
+  private readonly dropoutLog: string[] = [];
   private driftMs: number | null = null;
   private deadbandS = MIN_DEADBAND_S;
   private consecutiveHighDrift = 0;
@@ -289,6 +302,11 @@ export class PlayerEngine {
   private addedTracks: Array<{ el: HTMLTrackElement; url: string }> = [];
   /** Chromium's audio-language switching; null where the browser does it natively. */
   private audioChoice: AudioTrackController | null = null;
+  /**
+   * Waiting to land where the other person already is (§4.1: never skip
+   * footage they have not seen — this only ever moves US).
+   */
+  private adoptPending = false;
   /** Embedded subtitles being read out of the file, 0..1; null when idle. */
   private subtitlesPreparing: number | null = null;
   private subtitleRun = 0;
@@ -299,6 +317,14 @@ export class PlayerEngine {
     this.manualOffsetSec = opts.manualOffsetSec ?? 0;
     this.transportState = opts.transport.state;
 
+    // Dev-only console handle, so a peer-lost that has already latched can be
+    // read out after the fact instead of needing to be caught live.
+    if (__RUYAH_DEV_TOOLS__ && typeof window !== 'undefined') {
+      (window as unknown as { __ruyah?: unknown }).__ruyah = {
+        dropoutReport: () => this.dropoutReport(),
+        engine: this,
+      };
+    }
 
     this.unsubscribers.push(this.transport.on((msg) => this.onMessage(msg)));
     this.unsubscribers.push(
@@ -316,6 +342,9 @@ export class PlayerEngine {
   attach(video: HTMLVideoElement): () => void {
     this.detach();
     this.video = video;
+    // A fresh attach is either the start of a session or someone coming back to
+    // one already running; the first heartbeat decides which.
+    this.adoptPending = true;
 
     const on = <K extends keyof HTMLMediaElementEventMap>(
       type: K,
@@ -547,6 +576,8 @@ export class PlayerEngine {
   play(): void {
     const v = this.video;
     if (!v || this.mediaError) return;
+    // Pressing play is a decision about where we are; stop waiting to be moved.
+    this.adoptPending = false;
     if (this.commitPendingSeekAs(true)) return;
 
     // §6.2: P is the MINIMUM, because nobody can start early — waiting is only
@@ -617,6 +648,7 @@ export class PlayerEngine {
   seek(position: number, playAfter?: boolean): void {
     const v = this.video;
     if (!v) return;
+    this.adoptPending = false;
     this.clearPendingSeek();
     const wasPlaying = playAfter ?? !v.paused;
     const executeAt = this.now() + this.seekLeadMs();
@@ -822,6 +854,18 @@ export class PlayerEngine {
     this.notify();
   }
 
+  /** Dev-panel affordance for acceptance tests 4 and 5: fake decoder drift. */
+  debugInjectDrift(seconds: number): void {
+    const v = this.video;
+    if (!__RUYAH_DEV_TOOLS__ || !v) return;
+    // Deliberately local and unbroadcast — this simulates the decoders
+    // separating, not a user seek. No cooldown either, so the very next
+    // heartbeat sees it.
+    this.suppress();
+    v.currentTime = Math.max(0, v.currentTime + seconds);
+    this.notify();
+  }
+
   /** Explicit resync after a dropout (§8). Authority only. */
   private sendResyncSeek(): void {
     const v = this.video;
@@ -841,6 +885,9 @@ export class PlayerEngine {
     // Any traffic at all proves she is there (§8 liveness is separate from
     // §7.3's stale-heartbeat rejection, which is about drift maths only).
     this.lastPeerContactAt = this.now();
+    this.messagesReceived++;
+    this.lastInboundAt = this.lastPeerContactAt;
+    this.lastInboundType = msg.type;
     if (this.peerLost) this.onPeerReturned();
 
     switch (msg.type) {
@@ -996,6 +1043,21 @@ export class PlayerEngine {
     // Project forward — never use the raw position. "I was at P at time T" means
     // the same thing whether it arrives in 40ms or 900ms (§7.1).
     const peerPos = this.projectPeer(this.peer);
+
+    if (this.adoptPending) {
+      this.adoptPending = false;
+      // Coming back to a session that kept running: land where they are rather
+      // than sitting at the start. Without this the returning player is the one
+      // the other corrects toward — and if they came back holding authority
+      // (§3's sticky seat), pressing play would drag the other person back to
+      // the beginning of the film.
+      if (v.paused && v.currentTime < ADOPT_FROM_S && peerPos > ADOPT_MIN_S) {
+        this.suppress();
+        v.currentTime = peerPos;
+        this.notify();
+        return;
+      }
+    }
     const drift = v.currentTime - peerPos + this.manualOffsetSec; // + = we're ahead
     this.driftMs = drift * 1000;
 
@@ -1216,6 +1278,7 @@ export class PlayerEngine {
   private sendHeartbeat(): void {
     const v = this.video;
     if (!v) return;
+    this.heartbeatsSent++;
     this.transport.send({
       type: 'heartbeat',
       position: v.currentTime,
@@ -1296,6 +1359,13 @@ export class PlayerEngine {
     }
 
     this.peerLost = true;
+    this.probesSinceLost = 0;
+    this.recordDropoutEvent('declared-lost', {
+      slip,
+      limit,
+      probes: this.suspectProbes,
+      lossRate: Number(this.effectiveLossRate().toFixed(3)),
+    });
     this.suspectProbes = 0;
     this.resyncPending = true;
     this.cancelPending();
@@ -1340,10 +1410,55 @@ export class PlayerEngine {
   private probeWhileLost(tickAt: number): void {
     if (tickAt - this.lastProbeAt < PROBE_INTERVAL_MS) return;
     this.lastProbeAt = tickAt;
+    this.probesSinceLost++;
     this.sendHeartbeat();
+    // Every tenth probe, not every one: enough to show whether the probes are
+    // going out and nothing is coming back, without flooding the log.
+    if (this.probesSinceLost % 10 === 0) {
+      this.recordDropoutEvent('still-lost', { probes: this.probesSinceLost });
+    }
+  }
+
+  /**
+   * One line of §8 forensics. The engine cannot see the socket or the send
+   * queue, so it asks the transport for whatever it is willing to say — via
+   * feature detection, so SyncTransport stays exactly as §10 defines it.
+   */
+  private recordDropoutEvent(event: string, extra: Record<string, unknown>): void {
+    if (!__RUYAH_DEV_TOOLS__) return;
+    const doc = typeof document !== 'undefined' ? document : null;
+    const transport = this.transport as { debugInfo?: () => Record<string, unknown> };
+    const fields: Record<string, unknown> = {
+      event,
+      ...extra,
+      sinceContactMs: this.lastPeerContactAt ? this.now() - this.lastPeerContactAt : null,
+      sinceInboundMs: this.lastInboundAt ? this.now() - this.lastInboundAt : null,
+      lastInbound: this.lastInboundType,
+      heartbeatsSent: this.heartbeatsSent,
+      messagesReceived: this.messagesReceived,
+      videoAttached: this.video !== null,
+      heartbeatTimer: this.heartbeatTimer !== null,
+      hidden: doc ? doc.hidden : null,
+      focused: doc && typeof doc.hasFocus === 'function' ? doc.hasFocus() : null,
+      ...(transport.debugInfo ? transport.debugInfo() : {}),
+    };
+
+    const line = `[ruyah §8] ${new Date().toISOString()} ${JSON.stringify(fields)}`;
+    this.dropoutLog.push(line);
+    if (this.dropoutLog.length > 60) this.dropoutLog.shift();
+    console.warn(line);
+  }
+
+  /**
+   * The §8 log, for pasting somewhere after the fact. Reachable from the
+   * console as `__ruyah.dropoutReport()` — see the constructor.
+   */
+  dropoutReport(): string {
+    return this.dropoutLog.join('\n');
   }
 
   private onPeerReturned(): void {
+    this.recordDropoutEvent('recovered', { via: this.lastInboundType });
     this.peerLost = false;
     // Fresh heartbeat right away so she can compute min(positions) too.
     this.sendHeartbeat();

@@ -185,6 +185,18 @@ export class RoomRegistry {
     room.authorityTimer.unref?.();
   }
 
+  /**
+   * Who is seated in a room, other than `exceptUserId`. Read-only: it never
+   * creates the room or touches its timers, so a probe cannot keep one alive.
+   *
+   * @returns {string[]}
+   */
+  othersIn(code, exceptUserId) {
+    const room = this.#rooms.get(code);
+    if (!room) return [];
+    return [...room.members.keys()].filter((id) => id !== exceptUserId);
+  }
+
   /** The other member, or null while alone. Phase 2 rooms hold two people. */
   peerOf(room, userId) {
     for (const [id, ws] of room.members) {

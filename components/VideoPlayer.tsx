@@ -1,14 +1,19 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ChatAside, ChatToasts } from './ChatAside';
 import { ConnectionOverlay, PlayerOverlay } from './ConnectionOverlay';
+import { FramePointer } from './FramePointer';
 import { ControlBar, type PlayerPanel } from './ControlBar';
 import { OffsetPanel } from './PlayerPanels';
-import { FloatingReactions, HoldBanner, ResumePrompt } from './StageNotes';
+import { FloatingReactions, HoldBanner, Recap, ResumePrompt, TogetherMoment } from './StageNotes';
 import { Toast } from './Toast';
 import { useKeyboardShortcuts } from './useKeyboardShortcuts';
+import { InstrumentsPanel } from './dev/InstrumentsPanel';
+import { NetworkPanel } from './dev/NetworkPanel';
+import { SyncIndicator } from './dev/SyncIndicator';
+import { getDevServerSnapshot, getDevSnapshot, subscribeConfig } from '@/lib/relayConfig';
 import { fingerprintsMatch, getEngine, nameOf, useRuya } from '@/lib/store';
 
 const CONTROLS_IDLE_MS = 3_000;
@@ -23,9 +28,12 @@ export function VideoPlayer({ code }: { code: string }) {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [mismatchDismissed, setMismatchDismissed] = useState(false);
   const [keysOpen, setKeysOpen] = useState(false);
+  // Held while P is down: a dot on the frame that the other person sees too.
+  const [pointing, setPointing] = useState(false);
   // One panel at a time: opening any of them closes the rest.
   const [panel, setPanel] = useState<PlayerPanel | null>(null);
   const togglePanel = (p: PlayerPanel) => setPanel((v) => (v === p ? null : p));
+  const devMode = useSyncExternalStore(subscribeConfig, getDevSnapshot, getDevServerSnapshot);
   const [showKeysHint, setShowKeysHint] = useState(true);
 
   const objectUrl = useRuya((s) => s.objectUrl);
@@ -35,7 +43,7 @@ export function VideoPlayer({ code }: { code: string }) {
   const fingerprint = useRuya((s) => s.fingerprint);
   const peerFingerprint = useRuya((s) => s.peerFingerprint);
   const setReady = useRuya((s) => s.setReady);
-  const leave = useRuya((s) => s.leave);
+  const leave = useRuya((s) => s.leaveRoom);
   const setChatOpen = useRuya((s) => s.setChatOpen);
 
   const sameEncode = fingerprintsMatch(fingerprint, peerFingerprint);
@@ -47,6 +55,7 @@ export function VideoPlayer({ code }: { code: string }) {
       setPanel(null);
     },
     onHold: () => togglePanel('hold'),
+    onPoint: setPointing,
     onToggleChat: () => setChatOpen(!useRuya.getState().chatOpen),
   });
 
@@ -136,6 +145,12 @@ export function VideoPlayer({ code }: { code: string }) {
           // No `controls`: every action routes through PlayerEngine (§11).
         />
 
+        {/* Outside ControlBar on purpose: the sync state stays readable when the
+            bar has faded (rule 6). Each dev tool is behind __RUYAH_DEV_TOOLS__
+            where it is used, so a build without them drops the imports too
+            (lib/devTools.d.ts). */}
+        {__RUYAH_DEV_TOOLS__ && <SyncIndicator />}
+
         {sameEncode === false && !mismatchDismissed && (
           <div
             role="status"
@@ -162,10 +177,17 @@ export function VideoPlayer({ code }: { code: string }) {
         <Toast barVisible={barVisible} />
 
         {panel === 'offset' && <OffsetPanel />}
+        {__RUYAH_DEV_TOOLS__ && panel === 'dev' && devMode && <InstrumentsPanel />}
+        {/* The network simulator; renders only over a simulated transport. */}
+        {__RUYAH_DEV_TOOLS__ && <NetworkPanel />}
+
+        <FramePointer videoRef={videoRef} pointing={pointing} />
 
         <FloatingReactions />
+        <TogetherMoment />
         <HoldBanner />
         <ResumePrompt />
+        <Recap />
 
         {keysOpen && <KeysSheet onClose={() => setKeysOpen(false)} />}
 
@@ -190,6 +212,7 @@ export function VideoPlayer({ code }: { code: string }) {
           panel={panel}
           onTogglePanel={togglePanel}
           onClosePanel={() => setPanel(null)}
+          showDev={__RUYAH_DEV_TOOLS__ && devMode}
         />
 
         <ChatToasts barVisible={barVisible} />
@@ -213,6 +236,7 @@ const KEY_ROWS: Array<[string, string]> = [
   ['0 – 9', 'jump to 0–90%'],
   ['C', 'show / hide chat'],
   ['H', 'hold on, for both'],
+  ['P (hold)', 'point at the frame'],
   ['?', 'this sheet'],
 ];
 

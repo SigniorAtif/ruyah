@@ -1,7 +1,8 @@
 /**
  * Wire + transport contract (spec §10).
  *
- * The seam every transport implements. Nothing here may know about video.
+ * This file is the seam between Phase 1 (MockTransport, BroadcastChannel) and
+ * Phase 2 (WebSocketTransport). Nothing here may know about video.
  *
  * Time rule (spec §5): every timestamp in this file is epoch milliseconds.
  * No timezones, no Date parsing, no date libraries anywhere under lib/sync.
@@ -61,7 +62,7 @@ export type SyncMessage =
     };
 
 /** What a `chat` frame carries. Absent means an ordinary line. */
-export type ChatKind = 'text' | 'reaction' | 'typing' | 'hold';
+export type ChatKind = 'text' | 'reaction' | 'typing' | 'hold' | 'point';
 
 /**
  * Why a session could not proceed.
@@ -124,6 +125,7 @@ export interface SyncTransport {
    * a silent promotion is exactly what §3 forbids, and the engine gates all
    * correction on this flag.
    *
+   * MockTransport fixes authority at construction and never fires this.
    */
   onAuthorityChange(handler: (isAuthority: boolean) => void): () => void;
 
@@ -140,4 +142,43 @@ export interface SyncTransport {
   readonly lossRate: number; // 0..1, unanswered pings; sizes §8's dropout probes
   readonly isAuthority: boolean;
   readonly state: TransportState;
+}
+
+/** Knobs the dev panel drives (spec §10). Not part of the production seam. */
+export interface NetworkConditions {
+  /**
+   * Delay this client's link adds to a round trip, ms.
+   *
+   * Applied as half on the way out and half on the way in, deliberately. An
+   * outbound-only delay is a perfectly asymmetric path, and the rtt/2 in
+   * ClockSync cannot see asymmetry — it would hand this client an offset
+   * wrong by half the injected latency and desync every scheduled command by
+   * that much, with the drift machine reading zero because the same bias
+   * cancels out of its own maths. Splitting it keeps the simulated link
+   * honest.
+   */
+  latencyMs: number;
+  /** Uniform +/- jitter added to latencyMs, ms. Causes real packet reordering. */
+  jitterMs: number;
+  /** Probability [0,1] that an outbound message is silently lost. */
+  dropRate: number;
+  /** false = this client's link is down: nothing leaves and nothing arrives. */
+  connected: boolean;
+}
+
+/**
+ * A transport that can lie about the network. Only the dev-tools transports
+ * (MockTransport, SimulatedWebSocketTransport) implement this; the dev panel
+ * codes against it so no simulation types leak into PlayerEngine.
+ */
+export interface SimulatedTransport extends SyncTransport {
+  getNetwork(): NetworkConditions;
+  setNetwork(patch: Partial<NetworkConditions>): void;
+  /** Estimated offset from this client's clock to the authority's, ms. */
+  readonly clockOffsetMs: number;
+  readonly hasClockEstimate: boolean;
+}
+
+export function isSimulatedTransport(t: SyncTransport): t is SimulatedTransport {
+  return typeof (t as SimulatedTransport).setNetwork === 'function';
 }

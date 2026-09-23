@@ -12,16 +12,27 @@
 
 import { create } from 'zustand';
 import { WebSocketTransport } from './sync/websocketTransport';
+import { MockTransport } from './sync/mockTransport';
+import { SimulatedWebSocketTransport } from './sync/simulatedTransport';
 import { PlayerEngine, type EngineStatus } from './player/engine';
 import { prefetchPreferredAudio, prepareSubtitles, releaseFile } from '@/lib/player/audioTracks';
 import { fingerprintFile } from './player/fingerprint';
 import type {
+  NetworkConditions,
   SyncErrorCode,
   SyncMessage,
   SyncTransport,
   TransportState,
 } from './sync/types';
-import { isDevMode, saveDisplayName, saveRelayUrl, validateRelayUrl } from './relayConfig';
+import { isSimulatedTransport } from './sync/types';
+import {
+  clearLastRoom,
+  isDevMode,
+  saveDisplayName,
+  saveLastRoom,
+  saveRelayUrl,
+  validateRelayUrl,
+} from './relayConfig';
 import { clampBurst, isKnownEmoji } from './emoji';
 
 /** No I/O/0/1 — these get read aloud over the phone. */
@@ -64,8 +75,17 @@ function makeUserId(displayName: string): string {
  * seat. The server's no-authority promotion is what recovers the room in that
  * case.
  */
-function sessionUserId(roomCode: string, displayName: string): string {
+function sessionUserId(roomCode: string, displayName: string, preferred?: string): string {
   const key = `ruyah:user:${roomCode}`;
+  // A rejoin brings the id it had, so the relay hands back the same seat.
+  if (preferred && preferred.split('#')[0] === displayName) {
+    try {
+      sessionStorage.setItem(key, preferred);
+    } catch {
+      /* as below */
+    }
+    return preferred;
+  }
   try {
     const stored = sessionStorage.getItem(key);
     if (stored && stored.split('#')[0] === displayName) return stored;
@@ -109,6 +129,8 @@ const REACTION_MS = 2_600;
 const BURST_GAP_MS = 70;
 /** On screen at once, across both people; enough for two full bursts. */
 const REACTIONS_ON_SCREEN = 32;
+/** A pointed-at spot lapses on its own, in case the release frame is lost. */
+const POINT_LAPSE_MS = 2_000;
 /** A typing notice lapses on its own if the next one never comes. */
 const TYPING_LAPSE_MS = 4_000;
 
@@ -124,6 +146,19 @@ export interface ChatMessage {
   hold?: boolean;
   reply?: { wireId: string; text: string; mine: boolean } | null;
 }
+
+/** A reaction as it happened in the film, kept for the session: the seek bar's marks. */
+export interface ReactionMoment {
+  emoji: string;
+  mine: boolean;
+  /** Film time it was sent at, seconds. */
+  position: number;
+  /** Copies in the burst; one for a tap. */
+  count: number;
+}
+
+/** The session's reactions are few, but a long film with a lot of bursts is bounded here. */
+const MOMENTS_KEEP = 2_000;
 
 export interface FloatingReaction {
   id: number;
@@ -157,7 +192,14 @@ function wireId(): string {
 const TOAST_MS = 1_400;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 let typingTimer: ReturnType<typeof setTimeout> | null = null;
+let pointTimer: ReturnType<typeof setTimeout> | null = null;
 let reactionSeq = 0;
+/** The latest reaction from each side, by arrival here, for spotting a match. */
+let lastReaction: { mine: { emoji: string; at: number } | null; theirs: { emoji: string; at: number } | null } = {
+  mine: null,
+  theirs: null,
+};
+let togetherTimer: ReturnType<typeof setTimeout> | null = null;
 let toastSeq = 0;
 
 let transport: SyncTransport | null = null;
@@ -194,6 +236,7 @@ interface RuyaState {
 
   // --- playback, mirrored out of the engine
   status: EngineStatus | null;
+  network: NetworkConditions | null;
   toast: { id: number; text: string } | null;
 
   // --- chat
@@ -210,7 +253,15 @@ interface RuyaState {
   chatHandoffPending: boolean;
   /** The other person is writing something. */
   peerTyping: boolean;
+  /** Where the other person is pointing, as a fraction of the picture. */
+  peerPoint: { x: number; y: number } | null;
   reactions: FloatingReaction[];
+  /** Every reaction this session, both sides, with where in the film it was. */
+  moments: ReactionMoment[];
+  /** Both of you just sent the same reaction; shown big for a moment. */
+  together: { id: number; emoji: string } | null;
+  /** Every such match this session, with where in the film it was. */
+  matches: Array<{ emoji: string; position: number }>;
   /** A hold-on pause in force, and who asked for it. Cleared on the next play. */
   hold: { mine: boolean; reason: string } | null;
   /**
@@ -230,8 +281,10 @@ interface RuyaState {
     roomCode: string;
     displayName: string;
     isAuthority: boolean;
-    /** Runtime relay endpoint. Always a real wss:// relay. */
+    /** Runtime relay endpoint. Empty selects the mock, in dev mode only. */
     relayUrl: string;
+    /** Rejoining: the id used last time, for the same seat and authority. */
+    userId?: string;
   }): Promise<void>;
   setFile(file: File): Promise<void>;
   setReady(ready: boolean): void;
@@ -242,12 +295,20 @@ interface RuyaState {
   sendChat(text: string, opts?: { position?: number; replyTo?: string }): void;
   /** Tell the other side we are typing (throttled by the caller). */
   sendTyping(): void;
+  /**
+   * Point at a spot in the picture, as a fraction of it, or null to stop.
+   * Throttled by the caller; it goes out as often as the mouse moves.
+   */
+  sendPoint(spot: { x: number; y: number } | null): void;
   /** `count` above one is a held reaction; clamped to MAX_BURST. */
   sendReaction(emoji: string, count?: number): void;
   /** Pause for both, with a reason the other person sees. */
   holdOn(reason: string): void;
   setChatOpen(open: boolean): void;
+  setNetwork(patch: Partial<NetworkConditions>): void;
   leave(): void;
+  /** Leave on purpose: also forget the room, so the lobby stops offering it. */
+  leaveRoom(): void;
 }
 
 /** Everything in the store that is session state rather than an action. */
@@ -258,13 +319,16 @@ type SessionData = Omit<
   | 'setReady'
   | 'ensureEngine'
   | 'showToast'
+  | 'setNetwork'
   | 'sendChat'
   | 'sendTyping'
+  | 'sendPoint'
   | 'sendReaction'
   | 'holdOn'
   | 'setChatOpen'
   | 'reconnect'
   | 'leave'
+  | 'leaveRoom'
 >;
 
 /**
@@ -297,6 +361,7 @@ const EMPTY_SESSION: SessionData = {
   peerFingerprint: null,
 
   status: null,
+  network: null,
   toast: null,
 
   messages: [],
@@ -305,7 +370,11 @@ const EMPTY_SESSION: SessionData = {
   chatToasts: [],
   chatHandoffPending: false,
   peerTyping: false,
+  peerPoint: null,
   reactions: [],
+  moments: [],
+  together: null,
+  matches: [],
   hold: null,
   chatLanded: [],
 
@@ -356,6 +425,14 @@ function resolveReply(
   return { wireId: replyTo, text: quote.slice(0, QUOTE_CHARS), mine: false };
 }
 
+/** `x,y` as fractions of the picture, or null for "stopped pointing". */
+function parsePoint(text: string): { x: number; y: number } | null {
+  const [x, y] = text.split(',').map(Number);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (x < 0 || x > 1 || y < 0 || y > 1) return null;
+  return { x, y };
+}
+
 /** Float a reaction over the film for a moment, on this side; a burst streams `count` of them. */
 function pushReaction(
   set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
@@ -375,33 +452,89 @@ function pushReaction(
   for (let i = 1; i < count; i++) setTimeout(float, i * BURST_GAP_MS);
 }
 
+/** Same reaction from both sides within this long reads as one shared moment. */
+const MATCH_WINDOW_MS = 1_500;
+/** How long the shared moment holds the screen. */
+const TOGETHER_MS = 2_400;
+
+/**
+ * Each side spots the match itself, from what it sent and what arrived, so
+ * nothing extra crosses the network. Both sides see the same two reactions and
+ * so, bar a match right at the edge of the window, both see the moment.
+ */
+function noticeMatch(
+  set: (patch: Partial<RuyaState> | ((s: RuyaState) => Partial<RuyaState>)) => void,
+  emoji: string,
+  mine: boolean,
+  position: number,
+): void {
+  const now = Date.now();
+  const other = mine ? lastReaction.theirs : lastReaction.mine;
+  if (other && other.emoji === emoji && now - other.at <= MATCH_WINDOW_MS) {
+    // Used up: a third copy inside the window is not a second match.
+    lastReaction = { mine: null, theirs: null };
+    const id = ++reactionSeq;
+    set((s) => ({ together: { id, emoji }, matches: [...s.matches, { emoji, position }] }));
+    if (togetherTimer !== null) clearTimeout(togetherTimer);
+    togetherTimer = setTimeout(() => set((s) => (s.together?.id === id ? { together: null } : {})), TOGETHER_MS);
+    return;
+  }
+  lastReaction = { ...lastReaction, [mine ? 'mine' : 'theirs']: { emoji, at: now } };
+}
+
+function logMoment(
+  set: (fn: (s: RuyaState) => Partial<RuyaState>) => void,
+  moment: ReactionMoment,
+): void {
+  set((s) => ({ moments: [...s.moments, moment].slice(-MOMENTS_KEEP) }));
+}
+
 export const useRuya = create<RuyaState>((set, get) => ({
   ...EMPTY_SESSION,
 
-  async startSession({ roomCode, displayName, isAuthority, relayUrl }) {
+  async startSession({ roomCode, displayName, isAuthority, relayUrl, userId: rejoinAs }) {
     get().leave();
 
     const trimmed = relayUrl.trim();
-    const check = validateRelayUrl(trimmed, isDevMode());
-    if (!check.ok) {
-      set({
-        sessionError: {
-          code: 'invalid_url',
-          message: check.message ?? 'That relay address is not usable.',
-        },
-      });
-      return;
+    const devMode = isDevMode();
+
+    // Empty + dev flag is the only way to reach the mock. Without the flag an
+    // empty field is a mistake, not a request for BroadcastChannel — silently
+    // running the mock in production would look like a relay that works and
+    // then never sees the other person.
+    const useMock = __RUYAH_DEV_TOOLS__ && trimmed === '' && devMode;
+
+    if (!useMock) {
+      const check = validateRelayUrl(trimmed, devMode);
+      if (!check.ok) {
+        set({
+          sessionError: {
+            code: 'invalid_url',
+            message: check.message ?? 'That relay address is not usable.',
+          },
+        });
+        return;
+      }
     }
-    // Persisted so a second window opens against the same relay rather than
-    // falling back to the default and never meeting the first.
+    // Persisted even when empty. Empty is a real choice — it selects the mock in
+    // dev mode — and not storing it meant a second tab fell back to the default
+    // relay and tried to reach the internet while the first was on the mock, so
+    // the two never met.
     saveRelayUrl(trimmed);
     // Remembered so the lobby does not ask for it again next visit.
     saveDisplayName(displayName);
 
-    const userId = sessionUserId(roomCode, displayName);
-    // §7.2's authority is the server's to assign; the lobby's `isAuthority` is
-    // only a starting guess and is corrected from the `joined` answer.
-    const t: SyncTransport = new WebSocketTransport({ url: trimmed });
+    const userId = sessionUserId(roomCode, displayName, rejoinAs);
+    // §7.2's authority. Over BroadcastChannel the lobby's choice is the only
+    // source of truth; against a relay the server assigns it, and `isAuthority`
+    // below is corrected from the `joined` answer.
+    // A build without dev tools only ever gets the plain relay transport; the
+    // other two are dropped from it along with their imports (lib/devTools.d.ts).
+    const t: SyncTransport = !__RUYAH_DEV_TOOLS__
+      ? new WebSocketTransport({ url: trimmed })
+      : useMock
+        ? new MockTransport({ isAuthority })
+        : new SimulatedWebSocketTransport({ url: trimmed });
     transport = t;
 
     unsubscribers.push(
@@ -416,8 +549,23 @@ export const useRuya = create<RuyaState>((set, get) => ({
           typingTimer = setTimeout(() => set({ peerTyping: false }), TYPING_LAPSE_MS);
           return;
         }
+        if (kind === 'point') {
+          const spot = parsePoint(msg.text);
+          if (pointTimer !== null) clearTimeout(pointTimer);
+          pointTimer = null;
+          set({ peerPoint: spot });
+          // Lapses on its own: a dropped release frame must not leave it lit.
+          if (spot) pointTimer = setTimeout(() => set({ peerPoint: null }), POINT_LAPSE_MS);
+          return;
+        }
         if (kind === 'reaction') {
-          if (isReaction(msg.text)) pushReaction(set, msg.text, false, clampBurst(msg.count));
+          if (!isReaction(msg.text)) return;
+          const count = clampBurst(msg.count);
+          pushReaction(set, msg.text, false, count);
+          noticeMatch(set, msg.text, false, get().status?.position ?? 0);
+          if (Number.isFinite(msg.position)) {
+            logMoment(set, { emoji: msg.text, mine: false, position: msg.position as number, count });
+          }
           return;
         }
         const text = msg.text.trim().slice(0, CHAT_MAX_CHARS);
@@ -493,6 +641,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
       userId,
       isAuthority,
       transportState: 'connecting',
+      network: isSimulatedTransport(t) ? t.getNetwork() : null,
     });
 
     await t.connect(roomCode, userId);
@@ -512,6 +661,7 @@ export const useRuya = create<RuyaState>((set, get) => ({
     // assumption — a creator rejoining a room they already own, or a joiner
     // landing in an empty one, both come back different from what was clicked.
     set({ transportState: t.state, isAuthority: t.isAuthority });
+    saveLastRoom({ code: roomCode, relayUrl: trimmed, displayName, userId, at: Date.now() });
   },
 
   async setFile(file) {
@@ -655,19 +805,33 @@ export const useRuya = create<RuyaState>((set, get) => ({
     });
   },
 
+  sendPoint(spot) {
+    if (!transport) return;
+    transport.send({
+      type: 'chat',
+      userId: get().userId,
+      text: spot ? `${spot.x.toFixed(4)},${spot.y.toFixed(4)}` : '',
+      at: transport.syncedNow(),
+      kind: 'point',
+    });
+  },
+
   sendReaction(emoji, count = 1) {
     if (!transport || !isReaction(emoji)) return;
     const burst = clampBurst(count);
+    const position = engine?.getStatus().position ?? 0;
     transport.send({
       type: 'chat',
       userId: get().userId,
       text: emoji,
       at: transport.syncedNow(),
-      position: engine?.getStatus().position ?? 0,
+      position,
       kind: 'reaction',
       ...(burst > 1 && { count: burst }),
     });
     pushReaction(set, emoji, true, burst);
+    logMoment(set, { emoji, mine: true, position, count: burst });
+    noticeMatch(set, emoji, true, position);
   },
 
   holdOn(raw) {
@@ -718,6 +882,17 @@ export const useRuya = create<RuyaState>((set, get) => ({
     await transport.connect(roomCode, userId);
   },
 
+  setNetwork(patch) {
+    if (!transport || !isSimulatedTransport(transport)) return;
+    transport.setNetwork(patch);
+    set({ network: transport.getNetwork() });
+  },
+
+  leaveRoom() {
+    clearLastRoom();
+    get().leave();
+  },
+
   leave() {
     for (const un of unsubscribers) un();
     unsubscribers = [];
@@ -733,6 +908,11 @@ export const useRuya = create<RuyaState>((set, get) => ({
     toastTimer = null;
     if (typingTimer !== null) clearTimeout(typingTimer);
     typingTimer = null;
+    if (togetherTimer !== null) clearTimeout(togetherTimer);
+    togetherTimer = null;
+    lastReaction = { mine: null, theirs: null };
+    if (pointTimer !== null) clearTimeout(pointTimer);
+    pointTimer = null;
     // Clearing roomCode is what actually returns to the lobby: Lobby renders
     // the room screen while it is set, and VideoPlayer routes back to '/' when
     // it no longer matches the URL (or the object URL is gone).

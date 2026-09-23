@@ -1,9 +1,34 @@
 'use client';
 
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { EMOJI_GROUPS, searchEmoji } from '@/lib/emoji';
+import {
+  getQuickEmojiServerSnapshot,
+  getQuickEmojiSnapshot,
+  recordEmojiUse,
+  subscribeEmojiUse,
+} from '@/lib/emojiUse';
 import { formatClock } from '@/lib/player/fingerprint';
-import { CHAT_MAX_CHARS, getEngine, nameOf, useRuya, type ChatMessage } from '@/lib/store';
+import {
+  parseSticker,
+  searchStickers,
+  stickerToken,
+  type Sticker,
+} from '@/lib/stickers';
+import {
+  CHAT_MAX_CHARS,
+  getEngine,
+  nameOf,
+  useRuya,
+  type ChatMessage,
+} from '@/lib/store';
+
+/** What a sticker line reads as where it is not drawn: a reply quote, a label. */
+function lineLabel(text: string): string {
+  const sticker = parseSticker(text);
+  return sticker ? `sticker · ${sticker.label}` : text;
+}
 
 /**
  * The aside beside the film. Open it is a narrow column of what was said, each
@@ -86,7 +111,16 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [flashId, setFlashId] = useState<string | null>(null);
+  /** Which tray is open over the composer, if either. */
+  const [tray, setTray] = useState<'emoji' | 'stickers' | null>(null);
+  /** The quick row: their own most-picked emoji, seeded until they have picked any. */
+  const quickEmoji = useSyncExternalStore(
+    subscribeEmojiUse,
+    getQuickEmojiSnapshot,
+    getQuickEmojiServerSnapshot,
+  );
   const lastTypingSent = useRef(0);
+  const composerRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const them = nameOf(peerUserId);
@@ -126,6 +160,53 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
     setReplyTo(m);
     inputRef.current?.focus();
   };
+
+  /**
+   * An emoji lands where the caret is, not at the end: picking one in the
+   * middle of a sentence is the whole point of having the row there.
+   */
+  const insertEmoji = (emoji: string) => {
+    recordEmojiUse(emoji);
+    const el = inputRef.current;
+    const at = el?.selectionStart ?? draft.length;
+    const to = el?.selectionEnd ?? at;
+    const next = (draft.slice(0, at) + emoji + draft.slice(to)).slice(0, CHAT_MAX_CHARS);
+    onDraft(next);
+    // After React has written the value back, or the caret jumps to the end.
+    requestAnimationFrame(() => {
+      const caret = Math.min(at + emoji.length, next.length);
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  };
+
+  /** A sticker is a line of its own: it goes the moment it is picked. */
+  const sendSticker = (sticker: Sticker) => {
+    sendChat(stickerToken(sticker.id), {
+      position: startedAt ?? undefined,
+      replyTo: replyTo?.wireId,
+    });
+    setReplyTo(null);
+    setStartedAt(null);
+    setTray(null);
+  };
+
+  /*
+   * A press outside the composer closes the open tray. It is a document
+   * listener rather than a backdrop element because everything here sits
+   * inside animated, transformed ancestors, against which a `fixed` overlay
+   * resolves to the composer strip instead of the viewport — which left the
+   * log and the film unable to dismiss it. Keeping the composer itself out of
+   * it is what lets one tray hand over to the other in a single click.
+   */
+  useEffect(() => {
+    if (!tray) return;
+    const onPress = (e: PointerEvent) => {
+      if (!composerRef.current?.contains(e.target as Node)) setTray(null);
+    };
+    document.addEventListener('pointerdown', onPress);
+    return () => document.removeEventListener('pointerdown', onPress);
+  }, [tray]);
 
   /** Scroll to the line a reply points at and flash it, if it is still here. */
   const showOriginal = (wire: string) => {
@@ -236,16 +317,30 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
                   <span className="mr-1.5 font-mono text-[9px] uppercase tracking-[0.14em] text-faint">
                     {m.reply.mine ? 'you' : them}
                   </span>
-                  {m.reply.text}
+                  {lineLabel(m.reply.text)}
                 </motion.button>
               )}
-              <motion.p
-                layout={flewIn}
-                transition={HANDOFF_SPRING}
-                className="whitespace-pre-wrap break-words text-sm leading-[1.62]"
-              >
-                {m.text}
-              </motion.p>
+              {(() => {
+                const sticker = parseSticker(m.text);
+                return sticker ? (
+                  <motion.img
+                    layout={flewIn}
+                    transition={HANDOFF_SPRING}
+                    src={sticker.src}
+                    alt={sticker.label}
+                    draggable={false}
+                    className="block h-[104px] w-auto select-none"
+                  />
+                ) : (
+                  <motion.p
+                    layout={flewIn}
+                    transition={HANDOFF_SPRING}
+                    className="whitespace-pre-wrap break-words text-sm leading-[1.62]"
+                  >
+                    {m.text}
+                  </motion.p>
+                );
+              })()}
               <button
                 type="button"
                 onClick={() => startReply(m)}
@@ -276,7 +371,31 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
         </AnimatePresence>
       </motion.div>
 
-      <div className="flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]">
+      <div
+        ref={composerRef}
+        className="relative flex-none border-t border-line px-[22px] pb-5 pt-4 [animation:ry-slide-l_.5s_cubic-bezier(.2,.8,.2,1)_both]"
+      >
+        <AnimatePresence>
+          {tray && (
+            <motion.div
+              key={tray}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 10 }}
+              transition={{ duration: 0.22, ease: [0.2, 0.8, 0.2, 1] }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setTray(null);
+              }}
+              className="absolute bottom-full left-[22px] right-[22px] z-20 mb-2.5 rounded border border-line bg-[rgba(20,19,18,0.97)] p-2.5 shadow-[0_18px_48px_rgba(11,11,10,0.62)] backdrop-blur-md"
+            >
+              {tray === 'emoji' ? (
+                <EmojiTray onPick={insertEmoji} />
+              ) : (
+                <StickerTray onPick={sendSticker} />
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
         <AnimatePresence initial={false}>
           {replyTo && (
             <motion.div
@@ -292,7 +411,7 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
                   <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-kicker">
                     replying to {replyTo.mine ? 'yourself' : them}
                   </p>
-                  <p className="truncate text-[12.5px] text-muted">{replyTo.text}</p>
+                  <p className="truncate text-[12.5px] text-muted">{lineLabel(replyTo.text)}</p>
                 </div>
                 <button
                   type="button"
@@ -306,6 +425,30 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
             </motion.div>
           )}
         </AnimatePresence>
+        {/* The six this person actually uses, then the way to everything else. */}
+        <div className="mb-2.5 flex items-center gap-0.5">
+          {quickEmoji.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              onClick={() => insertEmoji(emoji)}
+              aria-label={`Add ${emoji}`}
+              className="cursor-pointer rounded border-0 bg-transparent px-[3px] py-0.5 text-[15px] leading-none opacity-65 transition-[opacity,transform] duration-200 hover:-translate-y-px hover:opacity-100"
+            >
+              {emoji}
+            </button>
+          ))}
+          <span className="mx-1.5 h-3.5 w-px flex-none bg-line" />
+          <TrayTab open={tray === 'emoji'} onClick={() => setTray((t) => (t === 'emoji' ? null : 'emoji'))}>
+            emoji
+          </TrayTab>
+          <TrayTab
+            open={tray === 'stickers'}
+            onClick={() => setTray((t) => (t === 'stickers' ? null : 'stickers'))}
+          >
+            stickers
+          </TrayTab>
+        </div>
         <div className="flex items-end gap-3">
           <input
             ref={inputRef}
@@ -315,6 +458,11 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
               if (e.key === 'Enter') {
                 e.preventDefault();
                 send();
+              }
+              // A tray is the nearest thing open, so it goes first.
+              if (e.key === 'Escape' && tray) {
+                e.stopPropagation();
+                setTray(null);
               }
             }}
             placeholder={replyTo ? 'Reply' : 'Say something'}
@@ -342,6 +490,145 @@ function ChatColumn({ onCollapse }: { onCollapse: () => void }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function TrayTab({
+  open,
+  onClick,
+  children,
+}: {
+  open: boolean;
+  onClick: () => void;
+  children: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      className={`cursor-pointer rounded-full border-0 px-2 py-[3px] font-mono text-[9px] uppercase tracking-[0.16em] transition-colors duration-200 ${
+        open ? 'bg-gold/15 text-gold-hi' : 'bg-transparent text-faint hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Every emoji the reactions use, searchable, here to be written into a line
+ * rather than thrown over the film. Sections are labelled but not tabbed: the
+ * composer's tray is a third of the height of the one on the control bar, and
+ * tabs in it would cost more room than the scrolling they save.
+ */
+function EmojiTray({ onPick }: { onPick: (emoji: string) => void }) {
+  const [query, setQuery] = useState('');
+  const field = useRef<HTMLInputElement>(null);
+  const results = query.trim() ? searchEmoji(query) : null;
+
+  useEffect(() => {
+    if (!window.matchMedia('(pointer: coarse)').matches) field.current?.focus();
+  }, []);
+
+  const cell = (emoji: string) => (
+    <button
+      key={emoji}
+      type="button"
+      onClick={() => onPick(emoji)}
+      aria-label={emoji}
+      className="flex h-[30px] w-[30px] cursor-pointer items-center justify-center rounded border-0 bg-transparent text-[17px] leading-none transition-colors duration-150 hover:bg-foreground/10"
+    >
+      {emoji}
+    </button>
+  );
+
+  return (
+    <>
+      <input
+        ref={field}
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="search"
+        aria-label="Search emoji"
+        spellCheck={false}
+        className="mb-1.5 w-full border-0 border-b border-line bg-transparent px-0.5 py-1 font-mono text-[11px] text-foreground caret-gold-hi outline-none transition-colors duration-300 placeholder:uppercase placeholder:tracking-[0.16em] focus:border-gold"
+      />
+      <div className="h-[168px] overflow-y-auto overscroll-contain [mask-image:linear-gradient(to_bottom,black_88%,transparent)] [scrollbar-width:none]">
+        {results ? (
+          results.length ? (
+            <div className="grid grid-cols-8">{results.map(cell)}</div>
+          ) : (
+            <p className="pt-5 text-center font-display text-[15px] italic text-muted">
+              Nothing by that name.
+            </p>
+          )
+        ) : (
+          EMOJI_GROUPS.map((g, i) => (
+            <section key={g.id} aria-label={g.label}>
+              <p
+                className={`pb-1 font-mono text-[9px] uppercase tracking-[0.18em] text-faint ${i ? 'pt-2' : ''}`}
+              >
+                {g.label}
+              </p>
+              <div className="grid grid-cols-8">{g.emoji.map(([e]) => cell(e))}</div>
+            </section>
+          ))
+        )}
+      </div>
+    </>
+  );
+}
+
+/** The stickers, which send themselves: there is nothing to add to one. */
+function StickerTray({ onPick }: { onPick: (sticker: Sticker) => void }) {
+  const [query, setQuery] = useState('');
+  const results = searchStickers(query);
+
+  return (
+    <>
+      <input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="search"
+        aria-label="Search stickers"
+        spellCheck={false}
+        className="mb-1.5 w-full border-0 border-b border-line bg-transparent px-0.5 py-1 font-mono text-[11px] text-foreground caret-gold-hi outline-none transition-colors duration-300 placeholder:uppercase placeholder:tracking-[0.16em] focus:border-gold"
+      />
+      <div className="max-h-[186px] overflow-y-auto overscroll-contain [scrollbar-width:none]">
+        {results.length ? (
+          <div className="grid grid-cols-3 gap-1.5">
+            {results.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                onClick={() => onPick(s)}
+                title={s.label}
+                aria-label={`Send ${s.label}`}
+                className="flex cursor-pointer items-center justify-center rounded border border-transparent bg-transparent p-1.5 transition-[background-color,border-color,transform] duration-200 hover:border-gold/40 hover:bg-gold/10 active:scale-95"
+              >
+                {/* A few KB of local PNG in a static export: there is no loader
+                    to route it through, and nothing to optimise. */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={s.src}
+                  alt=""
+                  draggable={false}
+                  className="h-[60px] w-auto select-none"
+                />
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="pt-5 text-center font-display text-[15px] italic text-muted">
+            Nothing by that name.
+          </p>
+        )}
+      </div>
+      <p className="pt-2 font-mono text-[9px] uppercase tracking-[0.16em] text-dim">
+        a sticker sends on its own
+      </p>
+    </>
   );
 }
 
@@ -498,7 +785,7 @@ export function ChatToasts({ barVisible }: { barVisible: boolean }) {
             layoutId={chatLayoutId(c.id)}
             type="button"
             onClick={() => void openChat(c.id)}
-            aria-label={`Message from ${them}: ${c.text}. Open chat`}
+            aria-label={`Message from ${them}: ${lineLabel(c.text)}. Open chat`}
             initial={{ opacity: 0, x: 30 }}
             animate={{ opacity: 1, x: 0 }}
             variants={{ exit: toastExit(c.id) }}
@@ -513,7 +800,20 @@ export function ChatToasts({ barVisible }: { barVisible: boolean }) {
                 <span className="tabular-nums text-dim">{formatClock(c.position)}</span>
               )}
             </span>
-            <span className="block break-words text-sm leading-[1.6]">{c.text}</span>
+            {(() => {
+              const sticker = parseSticker(c.text);
+              return sticker ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={sticker.src}
+                  alt={sticker.label}
+                  draggable={false}
+                  className="block h-[74px] w-auto select-none"
+                />
+              ) : (
+                <span className="block break-words text-sm leading-[1.6]">{c.text}</span>
+              );
+            })()}
           </motion.button>
         ))}
       </AnimatePresence>

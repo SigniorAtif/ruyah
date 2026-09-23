@@ -1,9 +1,10 @@
 'use client';
 
-import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatClock } from '@/lib/player/fingerprint';
 import { resumePoint, savePosition } from '@/lib/player/resume';
+import { binMoments, favourite, topMoments } from '@/lib/moments';
 import { getEngine, nameOf, SCATTER_ABOVE, useRuya } from '@/lib/store';
 
 /**
@@ -71,6 +72,180 @@ export function FloatingReactions() {
   );
 }
 
+/**
+ * Both of you sent the same reaction at once: one big copy in the middle, a
+ * ring going out from it on each side, and the word for it. Takes no clicks.
+ */
+export function TogetherMoment() {
+  const together = useRuya((s) => s.together);
+  const reduceMotion = useReducedMotion();
+  return (
+    <div aria-hidden className="pointer-events-none absolute inset-0 z-[6] flex items-center justify-center">
+      <AnimatePresence>
+        {together && (
+          <motion.div
+            key={together.id}
+            className="relative flex flex-col items-center"
+            initial={{ opacity: 0, scale: reduceMotion ? 1 : 0.4 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: reduceMotion ? 1 : 1.15, transition: { duration: 0.5 } }}
+            transition={{ type: 'spring', stiffness: 260, damping: 16 }}
+          >
+            {!reduceMotion &&
+              [0, 0.18].map((delay) => (
+                <motion.span
+                  key={delay}
+                  className="absolute left-1/2 top-[70px] h-[140px] w-[140px] -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-gold-hi"
+                  initial={{ opacity: 0.8, scale: 0.6 }}
+                  animate={{ opacity: 0, scale: 2.4 }}
+                  transition={{ duration: 1.3, delay, ease: 'easeOut' }}
+                />
+              ))}
+            <span className="text-[120px] leading-[140px] drop-shadow-[0_10px_30px_rgba(0,0,0,0.6)]">
+              {together.emoji}
+            </span>
+            <span className="mt-2 font-mono text-[11px] uppercase tracking-[0.3em] text-gold-hi drop-shadow-[0_2px_8px_rgba(0,0,0,0.8)]">
+              together
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+/** Stretches the recap looks for moments in; coarser than the seek bar's. */
+const RECAP_BINS = 40;
+
+/**
+ * When the film ends: the moments you both reacted to most, each person's
+ * favourite reaction, and how much was said. Worked out on each side from the
+ * same session log, so both see the same card with "you" and "them" swapped.
+ * Jumping to a moment is an ordinary seek, so both players go.
+ */
+export function Recap() {
+  const status = useRuya((s) => s.status);
+  const moments = useRuya((s) => s.moments);
+  const messages = useRuya((s) => s.messages);
+  const matches = useRuya((s) => s.matches);
+  const peerUserId = useRuya((s) => s.peerUserId);
+  // Keyed by the duration, so a new film brings it back; any play hides it.
+  const [dismissedFor, setDismissedFor] = useState<number | null>(null);
+
+  const duration = status?.duration ?? 0;
+  const ended = !!status && duration > 0 && !status.playing && status.position >= duration - 1;
+  const lines = messages.filter((m) => !m.hold);
+  const top = useMemo(
+    () =>
+      topMoments(
+        binMoments(
+          moments,
+          lines.filter((m) => m.position !== null).map((m) => m.position as number),
+          duration,
+          RECAP_BINS,
+        ),
+        3,
+      ),
+    [moments, lines, duration],
+  );
+  if (!ended && dismissedFor !== null) setDismissedFor(null);
+  const visible = ended && dismissedFor !== duration;
+
+  const them = nameOf(peerUserId);
+  const mine = moments.filter((m) => m.mine);
+  const theirs = moments.filter((m) => !m.mine);
+  const people = [
+    { who: 'you', fav: favourite(mine), copies: mine.reduce((n, m) => n + m.count, 0), said: lines.filter((m) => m.mine).length },
+    { who: them, fav: favourite(theirs), copies: theirs.reduce((n, m) => n + m.count, 0), said: lines.filter((m) => !m.mine).length },
+  ];
+
+  return (
+    <AnimatePresence>
+      {visible && (
+        <motion.div
+          key="recap"
+          role="dialog"
+          aria-label="Recap"
+          initial={{ opacity: 0, y: 18 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 10, transition: { duration: 0.25 } }}
+          transition={{ type: 'spring', stiffness: 260, damping: 28, delay: 0.6 }}
+          className="absolute left-1/2 top-1/2 z-[8] max-h-[calc(100%-48px)] w-[min(440px,calc(100%-32px))] overflow-y-auto rounded border border-gold/40 bg-[rgba(20,19,18,0.95)] px-7 py-6 backdrop-blur-md [scrollbar-width:none]"
+          style={{ x: '-50%', y: '-50%' }}
+        >
+          <p className="kicker mb-1.5">the end</p>
+          <p className="mb-5 font-display text-[30px] font-light italic leading-tight">Watched together.</p>
+
+          <div className="mb-5 grid grid-cols-2 gap-4 border-y border-line-soft py-4">
+            {people.map((p) => (
+              <div key={p.who}>
+                <p className="mb-1.5 font-mono text-[9.5px] uppercase tracking-[0.18em] text-faint">{p.who}</p>
+                <p className="mb-1 font-display text-[22px]">
+                  {p.fav ? (
+                    <>
+                      {p.fav.emoji}
+                      <span className="ml-1.5 font-mono text-[11px] text-muted">×{p.fav.copies}</span>
+                    </>
+                  ) : (
+                    <span className="text-[15px] italic text-muted">no reactions</span>
+                  )}
+                </p>
+                <p className="font-mono text-[10.5px] tabular-nums text-muted">
+                  {p.copies} {p.copies === 1 ? 'reaction' : 'reactions'} · {p.said} {p.said === 1 ? 'line' : 'lines'}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {matches.length > 0 && (
+            <p className="mb-4 font-display text-[16px] text-muted">
+              You reacted <span className="text-gold-hi">together</span> {matches.length}{' '}
+              {matches.length === 1 ? 'time' : 'times'}
+              <span className="ml-2">{[...new Set(matches.map((m) => m.emoji))].slice(0, 5).join('')}</span>
+            </p>
+          )}
+
+          {top.length > 0 && (
+            <>
+              <p className="mb-2 font-mono text-[9.5px] uppercase tracking-[0.18em] text-faint">the moments</p>
+              <ul className="mb-5 flex flex-col gap-1">
+                {top.map((b) => (
+                  <li key={b.index}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        getEngine()?.seek(Math.max(0, b.first - 3));
+                        setDismissedFor(duration);
+                      }}
+                      className="flex w-full cursor-pointer items-center gap-3 rounded border-0 bg-transparent px-2 py-1.5 text-left transition-colors duration-200 hover:bg-foreground/5"
+                    >
+                      <span className="w-12 font-mono text-[12px] tabular-nums text-gold-hi">{formatClock(b.first)}</span>
+                      <span className="text-[17px]">{b.emoji.slice(0, 4).map(([e]) => e).join(' ')}</span>
+                      {b.lines > 0 && (
+                        <span className="ml-auto font-mono text-[10.5px] text-muted">
+                          {b.lines} {b.lines === 1 ? 'line' : 'lines'}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setDismissedFor(duration)}
+            className="cursor-pointer border-0 bg-transparent p-0 font-mono text-[10.5px] uppercase tracking-[0.16em] text-muted transition-colors duration-300 hover:text-foreground"
+          >
+            close
+          </button>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+
 /** While a hold-on pause is in force: who asked, why, and a way back in. */
 export function HoldBanner() {
   const hold = useRuya((s) => s.hold);
@@ -121,6 +296,8 @@ export function ResumePrompt() {
   const position = useRuya((s) => s.status?.position ?? 0);
   const duration = useRuya((s) => s.status?.duration ?? 0);
   const playing = useRuya((s) => s.status?.playing ?? false);
+  // Where the other person already is, if they kept watching without us.
+  const peerPosition = useRuya((s) => s.status?.peerPosition ?? null);
   const showToast = useRuya((s) => s.showToast);
   // Read once per film: the offer is about the last session, not this one.
   const [offer, setOffer] = useState<{ fp: string; at: number | null } | null>(null);
@@ -143,8 +320,11 @@ export function ResumePrompt() {
     }
   }, [fingerprint, position, duration, playing]);
 
-  // Past the opening, the moment has gone either way.
-  const visible = at !== null && !dismissed && position < 10;
+  // Past the opening, the moment has gone either way. And if the other person
+  // is already into the film, the engine puts us where they are instead — an
+  // old bookmark is not what this session is about any more.
+  const joiningThem = peerPosition !== null && peerPosition > 10;
+  const visible = at !== null && !dismissed && position < 10 && !joiningThem;
 
   return (
     <AnimatePresence>

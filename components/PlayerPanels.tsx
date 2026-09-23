@@ -33,7 +33,7 @@ export function formatOffset(seconds: number): string {
   return `${seconds >= 0 ? '+' : '−'}${Math.abs(seconds).toFixed(1)}s`;
 }
 
-const panelClass =
+export const panelClass =
   'absolute bottom-[136px] z-[9] rounded border border-foreground/15 bg-[rgba(20,19,18,0.94)] backdrop-blur-lg [animation:ry-pop_.4s_cubic-bezier(.2,.8,.2,1)_both]';
 
 /**

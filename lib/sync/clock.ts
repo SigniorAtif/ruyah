@@ -78,7 +78,7 @@ export interface ClockSyncOptions {
    * below). In server mode this is recorded but has no effect on timing.
    */
   isAuthority: boolean;
-  /** Defaults to 'peer'; the relay transport asks for 'server'. */
+  /** Defaults to 'peer' so Phase 1's MockTransport behaviour is unchanged. */
   reference?: ClockReference;
   /** Injectable raw clock, for tests. Defaults to Date.now. */
   now?: () => number;
@@ -279,9 +279,8 @@ export class ClockSync {
    * What this still cannot see is asymmetry in the PATH itself: with one leg
    * slower than the other by D, every estimate is wrong by D/2 and no amount
    * of sampling reveals it. That is why the simulated link splits its injected
-   * a real path is close enough to symmetric for this to hold. A link that is
-   * asymmetric on purpose — anything that delays one direction only — breaks it
-   * outright, so nothing may ever introduce one.
+   * latency across both directions (types.ts, NetworkConditions.latencyMs) —
+   * an outbound-only delay is the pathological case, not a realistic one.
    */
   private recordPong(t0: number, t1: number, t2Raw?: number): void {
     if (!this.burstActive) return; // late straggler from a finalized burst

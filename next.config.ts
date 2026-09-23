@@ -9,7 +9,14 @@ const nextConfig: NextConfig = {
   // The frontend is a static bundle: no server, no build-time config, deployable
   // to any static host and pointed at a relay at runtime (see lib/relayConfig).
   output: 'export',
-  /* config options here */
+  compiler: {
+    define: {
+      // Whether the dev tools are compiled in: always under `next dev`, and in a
+      // production build only with RUYAH_DEV_TOOLS=1. See lib/devTools.d.ts.
+      __RUYAH_DEV_TOOLS__:
+        process.env.NODE_ENV === 'development' || process.env.RUYAH_DEV_TOOLS === '1',
+    },
+  },
 };
 
 export default nextConfig;

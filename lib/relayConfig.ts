@@ -23,6 +23,7 @@ export const DEFAULT_RELAY_URL = 'wss://your-relay.example.com/ws';
 const RELAY_URL_KEY = 'ruyah:relay-url';
 const DEV_FLAG_KEY = 'ruyah:dev';
 const DISPLAY_NAME_KEY = 'ruyah:display-name';
+const LAST_ROOM_KEY = 'ruyah:last-room';
 
 /**
  * Failure reasons the lobby can explain (Phase 2 §3 plus the connection-level
@@ -88,6 +89,8 @@ export function subscribeConfig(onChange: () => void): () => void {
  * Runtime, not `NODE_ENV`: a static export bakes NODE_ENV in at build, which is
  * exactly the build-time coupling this module exists to remove. Set it by
  * visiting the app once with `?dev=1`; it sticks until cleared with `?dev=0`.
+ * It allows a loopback relay in any build; the dev tools themselves exist only
+ * in builds that carry them (lib/devTools.d.ts).
  */
 export function isDevMode(): boolean {
   if (typeof window === 'undefined') return false;
@@ -153,6 +156,66 @@ export function saveDisplayName(name: string): void {
   emit();
 }
 
+/**
+ * The room last entered, so the lobby can offer to go back after a refresh, a
+ * crash or a closed tab. The userId comes along so the relay gives back the
+ * same seat, and with it the authority if it was ours (§3).
+ */
+export interface LastRoom {
+  code: string;
+  relayUrl: string;
+  displayName: string;
+  userId: string;
+  /** Epoch ms when it was entered. */
+  at: number;
+}
+
+/** Past this, a room is not worth offering: the other person has long gone to bed. */
+export const LAST_ROOM_TTL_MS = 6 * 60 * 60 * 1000;
+
+/** The stored text, not the parsed object, so an unchanged value is the same snapshot. */
+export function getLastRoomSnapshot(): string | null {
+  if (typeof window === 'undefined') return null;
+  return safeGet(LAST_ROOM_KEY);
+}
+
+export const getLastRoomServerSnapshot = (): string | null => null;
+
+export function parseLastRoom(raw: string | null): LastRoom | null {
+  if (!raw) return null;
+  try {
+    const r = JSON.parse(raw) as Partial<LastRoom>;
+    if (
+      typeof r.code !== 'string' ||
+      typeof r.relayUrl !== 'string' ||
+      typeof r.displayName !== 'string' ||
+      typeof r.userId !== 'string' ||
+      typeof r.at !== 'number'
+    ) {
+      return null;
+    }
+    return r as LastRoom;
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastRoom(room: LastRoom): void {
+  if (typeof window === 'undefined') return;
+  safeSet(LAST_ROOM_KEY, JSON.stringify(room));
+  emit();
+}
+
+export function clearLastRoom(): void {
+  if (typeof window === 'undefined' || safeGet(LAST_ROOM_KEY) === null) return;
+  try {
+    localStorage.removeItem(LAST_ROOM_KEY);
+  } catch {
+    /* as in safeSet */
+  }
+  emit();
+}
+
 function isLoopback(hostname: string): boolean {
   return (
     hostname === 'localhost' ||
@@ -183,7 +246,10 @@ export function validateRelayUrl(raw: string, devMode = isDevMode()): RelayUrlCh
       ok: false,
       url,
       error: 'empty',
-      message: 'Enter the address of a relay to connect to.',
+      message:
+        __RUYAH_DEV_TOOLS__ && devMode
+          ? 'Empty uses the built-in mock transport (dev mode).'
+          : 'Enter the address of a relay to connect to.',
     };
   }
 
