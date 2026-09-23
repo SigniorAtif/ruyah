@@ -52,3 +52,8 @@ next-env.d.ts
 
 # copied from node_modules by scripts/copy-ffmpeg-worker.mjs
 /public/ffmpeg/
+
+# Local agent/tooling state (ruflo, claude-flow, vector store)
+/.claude-flow/
+/.swarm/
+/ruvector.db
