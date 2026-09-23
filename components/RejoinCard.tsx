@@ -68,9 +68,15 @@ export function RejoinCard() {
     }
   };
 
+  // Only shown when the relay says someone is in there: an empty room, a relay
+  // that is down and a relay too old to answer all look the same from here —
+  // nobody to go back to — and the check runs again every few seconds, so the
+  // card appears by itself if they turn up.
+  const there = presence?.kind === 'there' ? presence : null;
+
   return (
     <AnimatePresence initial={false}>
-      {last && presence && (
+      {last && there && (
         <motion.div
           key={last.code}
           initial={{ opacity: 0, height: 0 }}
@@ -79,11 +85,7 @@ export function RejoinCard() {
           transition={{ duration: 0.45, ease: [0.2, 0.8, 0.2, 1] }}
           className="overflow-hidden"
         >
-          <div
-            className={`rounded border px-5 py-4 ${
-              presence.kind === 'there' ? 'border-gold/45' : 'border-line'
-            }`}
-          >
+          <div className="rounded border border-gold/45 px-5 py-4">
             <div className="mb-1.5 flex items-baseline justify-between gap-3">
               <p className="font-mono text-[9.5px] uppercase tracking-[0.18em] text-kicker">
                 last room · {last.code}
@@ -98,33 +100,16 @@ export function RejoinCard() {
               </button>
             </div>
             <p className="font-display text-xl">
-              {presence.kind === 'there' && (
-                <>
-                  <span className="text-gold-hi">{nameOf(presence.others[0])}</span> is still there.
-                </>
-              )}
-              {presence.kind === 'empty' && <span className="text-muted">Nobody is there any more.</span>}
-              {presence.kind === 'unreachable' && (
-                <span className="text-muted">That relay is not answering.</span>
-              )}
-              {presence.kind === 'unsupported' && (
-                <span className="text-muted">This relay cannot say who is there.</span>
-              )}
+              <span className="text-gold-hi">{nameOf(there.others[0])}</span> is still there.
             </p>
-            {presence.kind !== 'empty' && (
-              <button
-                type="button"
-                onClick={rejoin}
-                disabled={busy}
-                className={`mt-3.5 w-full cursor-pointer rounded border bg-transparent px-4 py-2.5 font-display text-base font-semibold transition-[background-color,border-color,color,transform,opacity] duration-500 active:scale-[.985] ${
-                  presence.kind === 'there'
-                    ? 'border-gold text-gold-hi hover:bg-gold/15 hover:text-foreground'
-                    : 'border-line-strong text-foreground hover:border-gold hover:text-gold-hi'
-                }`}
-              >
-                {busy ? 'Rejoining…' : `Rejoin as ${last.displayName}`}
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={rejoin}
+              disabled={busy}
+              className="mt-3.5 w-full cursor-pointer rounded border border-gold bg-transparent px-4 py-2.5 font-display text-base font-semibold text-gold-hi transition-[background-color,color,transform,opacity] duration-500 hover:bg-gold/15 hover:text-foreground active:scale-[.985]"
+            >
+              {busy ? 'Rejoining…' : `Rejoin as ${last.displayName}`}
+            </button>
           </div>
         </motion.div>
       )}
