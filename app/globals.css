@@ -93,6 +93,78 @@ video::cue {
   color: var(--faint);
 }
 
+/*
+ * Lobby only, and a background layer on a section that already exists, so
+ * nothing moves: a peony scroll sunk into the bottom corner of the left
+ * column. Two washes of our own grey hold it back — the plate is cool
+ * green-black and the house is warm, so what should survive is the drawing,
+ * not its colour.
+ */
+@utility lobby-scroll {
+  background-color: var(--background);
+  background-image:
+    linear-gradient(to top, rgba(25, 23, 21, 0.64) 0%, rgba(25, 23, 21, 0.88) 48%, var(--background) 78%),
+    linear-gradient(to right, var(--background) 0%, rgba(25, 23, 21, 0.88) 38%, rgba(25, 23, 21, 0.58) 100%),
+    url('/lobby-scroll.jpg');
+  background-repeat: no-repeat;
+  background-position: center, center, right -2vw bottom -4vh;
+  background-size: cover, cover, auto min(86%, 760px);
+}
+
+/*
+ * The form side of the lobby: paper rather than a picture. Fractal noise,
+ * generated inline rather than shipped as a plate, so it tiles seamlessly at
+ * any size and costs no request. `soft-light` keeps the panel's own colour and
+ * only roughens it — a flat grey with tooth, which is what stops the right
+ * half reading as a slab without putting anything behind the fields.
+ */
+@utility lobby-grain {
+  /* A shade under the panel, because soft-light against mid-grey noise lifts
+     the whole surface; this lands it back on the house colour. */
+  background-color: #191715;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.1' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)' opacity='0.62'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 180px 180px;
+  background-blend-mode: soft-light;
+}
+
+/*
+ * The waiting side of the room, where there is nothing to do but read a code
+ * aloud and wait for someone. A brocade of cats, printed in the house gold on
+ * the house ink — the plate is pastel on cream, so it is inverted and mapped
+ * onto our two colours first, which leaves the drawing and throws away the
+ * palette. It gathers toward the bottom corner and never reaches the code.
+ */
+@utility room-cats {
+  background-color: var(--background);
+  background-image:
+    linear-gradient(
+      to bottom right,
+      var(--background) 0%,
+      rgba(25, 23, 21, 0.96) 34%,
+      rgba(25, 23, 21, 0.88) 62%,
+      rgba(25, 23, 21, 0.8) 100%
+    ),
+    url('/room-cats.jpg');
+  background-repeat: no-repeat, repeat;
+  background-position: center, right bottom;
+  background-size: cover, 280px auto;
+}
+
+/*
+ * One column: the plate and the type share the same width instead of sitting
+ * beside each other, so it shrinks and sinks further into the corner.
+ */
+@media (max-width: 719px) {
+  .lobby-scroll {
+    /* Three values, because the utility has three layers: two washes, then the
+       plate. Two here would silently size a gradient and let the plate go
+       full-bleed. */
+    background-position: center, center, right -16vw bottom -3vh;
+    background-size: cover, cover, auto 52%;
+  }
+}
+
 @keyframes ry-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.8); }
