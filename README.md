@@ -9,7 +9,7 @@ Nothing but timing crosses the network. The video never leaves your machine.
 [![CI](https://github.com/SigniorAtif/ruyah/actions/workflows/ci.yml/badge.svg)](https://github.com/SigniorAtif/ruyah/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[What it is](#what-it-is) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Deploying](#deploying) · [Docs](docs/)
+[What it is](#what-it-is) · [How it works](#how-it-works) · [Quick start](#quick-start) · [Deploying](#deploying) · [Docs](https://github.com/SigniorAtif/ruyah/wiki)
 
 </div>
 
@@ -93,8 +93,8 @@ Four ideas do the real work:
   imperceptible. A visible seek needs three consecutive heartbeats agreeing the
   gap exceeds a second, so jitter can never cause one.
 
-The full story, with diagrams, is in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
-and **[docs/PROTOCOL.md](docs/PROTOCOL.md)**.
+The full story, with diagrams, is in **[Architecture](https://github.com/SigniorAtif/ruyah/wiki/Architecture)**
+and **[Wire Protocol](https://github.com/SigniorAtif/ruyah/wiki/Wire-Protocol)**.
 
 ## Quick start
 
@@ -119,7 +119,7 @@ both pick your copy of the film, both press **Ready**.
 > fingerprints the file and warns you if they differ — two different rips have
 > different timestamps, and syncing them is meaningless.
 
-Contributors: see **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)** for the
+Contributors: see **[Development](https://github.com/SigniorAtif/ruyah/wiki/Development)** for the
 two-window workflow, the network simulator, and the branch layout.
 
 ## Configuration
@@ -226,12 +226,17 @@ reached it.
 
 | Document | What it covers |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Every module, what owns what, and how a command travels end to end |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | The wire format, the timing model, and the state machines, with sequence diagrams |
-| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Setup, the two-window test rig, the network simulator, how to submit a change |
-| [docs/BRANCHING.md](docs/BRANCHING.md) | `main` / `dev` / feature branches and how a release is cut |
-| [docs/sync-player-spec.md](docs/sync-player-spec.md) | The original client spec. Section numbers (§6.2, §7.4 …) in code comments point here |
-| [docs/ruyah-server-spec.md](docs/ruyah-server-spec.md) | The original relay spec |
+| [Architecture](https://github.com/SigniorAtif/ruyah/wiki/Architecture) | Every module, what owns what, and how a command travels end to end |
+| [Wire Protocol](https://github.com/SigniorAtif/ruyah/wiki/Wire-Protocol) | Every message, every field, and the rules for adding one |
+| [Clock Synchronisation](https://github.com/SigniorAtif/ruyah/wiki/Clock-Synchronisation) | The four-stamp estimate, and which of the two clocks everything is scheduled against |
+| [Playback Engine](https://github.com/SigniorAtif/ruyah/wiki/Playback-Engine) | Scheduled commands, the differential resume, the drift ladder and the liveness machine |
+| [Relay](https://github.com/SigniorAtif/ruyah/wiki/Relay) | Rooms, sticky authority, validation, rate limiting and backpressure |
+| [Constants](https://github.com/SigniorAtif/ruyah/wiki/Constants) | Every tunable in the system, its value, and the reasoning behind it |
+| [Development](https://github.com/SigniorAtif/ruyah/wiki/Development) | Setup, the build flag, the two-window rig, the network simulator |
+| [Testing](https://github.com/SigniorAtif/ruyah/wiki/Testing) | The suite, the fake clock, and how the tests are proven to bite |
+| [Troubleshooting](https://github.com/SigniorAtif/ruyah/wiki/Troubleshooting) | Symptoms, causes, and what to look at |
+| [Design Decisions](https://github.com/SigniorAtif/ruyah/wiki/Design-Decisions) | The choices that shaped everything else, including where the code departs from the original specs |
+| [Files, Audio and Subtitles](https://github.com/SigniorAtif/ruyah/wiki/Files-Audio-and-Subtitles) | Fingerprinting, track selection, extraction, and what stays on your machine |
 
 ## Licence
 
