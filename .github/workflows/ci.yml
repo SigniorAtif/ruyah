@@ -26,6 +26,9 @@ jobs:
       - run: npx next typegen
       - run: npx tsc --noEmit
       - run: npx eslint .
+      # The sync core: the clock, the engine's command and drift machinery, and
+      # the relay's validation and room logic. Fast, and no browser involved.
+      - run: npm test
       - run: npm run build
 
   no-dev-surface:
