@@ -49,6 +49,15 @@ next-env.d.ts
 # Local agent/tooling state
 /.claude/
 /.code-review-graph/
+/.claude-flow/
+/.swarm/
+/agentdb.rvf
+/agentdb.rvf.lock
+/ruvector.db
+
+# Working documents and source art, kept out of the published project.
+/PRODUCT.md
+/components/images/
 
 # copied from node_modules by scripts/copy-ffmpeg-worker.mjs
 /public/ffmpeg/
