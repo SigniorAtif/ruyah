@@ -24,6 +24,11 @@ export const STICKERS: readonly Sticker[] = [
   { id: 'batgirl', label: 'batgirl', words: 'batgirl shy smile bat', src: '/stickers/batgirl.png' },
   { id: 'blush', label: 'blushing bat cat', words: 'blush shy cape bat cat flustered', src: '/stickers/blush.png' },
   { id: 'spidey', label: 'spider-man', words: 'spider man spidey web', src: '/stickers/spidey.png' },
+  { id: 'ramen', label: 'batman and ramen', words: 'ramen noodles batman eat hungry dinner food', src: '/stickers/ramen.png' },
+  { id: 'coffee', label: 'cat with coffee', words: 'coffee cat mug tea morning awake', src: '/stickers/coffee.png' },
+  { id: 'nerd', label: 'nerd cat', words: 'nerd cat glasses smart thumbs up actually', src: '/stickers/nerd.png' },
+  { id: 'suit', label: 'cat in a suit', words: 'suit cat business work briefcase serious', src: '/stickers/suit.png' },
+  { id: 'rich', label: 'rich cat', words: 'rich cat money cash sunglasses paid', src: '/stickers/rich.png' },
 ];
 
 const BY_ID = new Map(STICKERS.map((s) => [s.id, s]));
